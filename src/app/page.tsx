@@ -2,8 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { 
-  Printer, Save, ShieldCheck, Waves, Plus, UserPlus, 
-  TrendingUp, Activity, Zap, Baby, LayoutDashboard, Share2, Search
+  Printer, Save, Waves, Plus, TrendingUp, Zap, Baby, 
+  Share2, Eye, X, Calculator, User
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import jsPDF from "jspdf";
@@ -19,11 +19,8 @@ type Athlete = {
 
 const DISTANCES = [25, 50, 100, 200, 400];
 
-// --- 核心计算 (用于 PDF) ---
-const calculateMCDS = (athlete: Athlete) => {
-  const t = athlete.t_value;
-  const css = athlete.css;
-  const stage = athlete.phv_stage;
+// --- 核心计算逻辑 (Golden Version) ---
+const calculateMCDS = (t: number, css: number, stage: string, age: number) => {
   const getPace = (id: string) => {
     let b25 = 0;
     if (id === 'SP') b25 = t;
@@ -35,9 +32,17 @@ const calculateMCDS = (athlete: Athlete) => {
     else if (id === 'BAE') b25 = (stage === 'pre' ? (css / 4 * 1.18) : (t * 1.55));
     return b25;
   };
+  const maxHR = 220 - age;
   return ['SP', 'TSP', 'ANP', 'ANE', 'AES', 'AEN', 'BAE'].map(zone => ({
-    zone, paces: DISTANCES.map(d => (getPace(zone) * (d / 25)).toFixed(1) + 's'),
-    hr: Math.round(((220 - athlete.age) * (zone === 'SP' ? 0.98 : 0.85)) / 6)
+    zone,
+    label: zone === 'SP' ? '绝对速度' : zone === 'TSP' ? '技术冲刺' : zone === 'ANP' ? '无氧功率' : zone === 'ANE' ? '无氧耐力' : zone === 'AES' ? '有氧动力' : zone === 'AEN' ? '有氧耐力' : '基础有氧',
+    paces: DISTANCES.map(d => {
+      const val = getPace(zone) * (d / 25);
+      const min = (val * 0.98).toFixed(1);
+      const max = (val * 1.02).toFixed(1);
+      return { val: val.toFixed(1) + 's', range: `${min}~${max}` };
+    }),
+    hr: Math.round((maxHR * (zone === 'SP' ? 0.98 : zone.startsWith('A') ? 0.85 : 0.75)) / 6)
   }));
 };
 
@@ -45,11 +50,13 @@ export default function Page() {
   const [athletes, setAthletes] = useState<Athlete[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Partial<Athlete>>>({});
   const [loading, setLoading] = useState(true);
-  const [savingId, setSavingId] = useState<string | null>(null);
+  const [activeAthlete, setActiveAthlete] = useState<Athlete | null>(null);
+  const [showStandaloneCalc, setShowStandaloneCalc] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
-    const { data } = await supabase.from("athletes").select("*").order("name");
+    const { data, error } = await supabase.from("athletes").select("*").order("name");
+    if (error) console.error(error);
     if (data) setAthletes(data);
     setLoading(false);
   };
@@ -67,180 +74,102 @@ export default function Page() {
   const saveAthlete = async (id: string) => {
     const edit = drafts[id];
     if (!edit) return;
-    setSavingId(id);
     const { error } = await supabase.from("athletes").update(edit).eq("id", id);
     if (!error) {
-      await supabase.from("measurements").insert({ athlete_id: id, ...edit });
+      await supabase.from("measurements").insert({ athlete_id: id, ...edit, recorded_at: new Date() });
       await loadData();
       const newDrafts = { ...drafts };
       delete newDrafts[id];
       setDrafts(newDrafts);
+      alert("同步成功！");
     }
-    setSavingId(null);
   };
 
   const addAthlete = async () => {
     const name = prompt("请输入新运动员姓名:");
     if (!name) return;
-    await supabase.from("athletes").insert({ 
-      name, age: 14, t_value: 15, css: 80, phv_stage: 'post', share_token: crypto.randomUUID() 
+    const { error } = await supabase.from("athletes").insert({ 
+      name, age: 14, t_value: 15.0, css: 80.0, phv_stage: 'post', 
+      share_token: Math.random().toString(36).substring(2) 
     });
-    loadData();
-  };
-
-  const generateBatchPDF = () => {
-    const doc = new jsPDF('p', 'mm', 'a4');
-    athletes.forEach((athlete, index) => {
-      if (index !== 0) doc.addPage();
-      doc.setFontSize(22); doc.text("M-CDS PERFORMANCE REPORT", 14, 20);
-      doc.setFontSize(10); doc.text(`NAME: ${athlete.name} | T-VAL: ${athlete.t_value}s | CSS: ${athlete.css}s`, 14, 28);
-      autoTable(doc, {
-        startY: 35,
-        head: [['ZONE', '25M', '50M', '100M', '200M', '400M', 'HR/10S']],
-        body: calculateMCDS(athlete).map(r => [r.zone, ...r.paces, r.hr]),
-        theme: 'striped', headStyles: { fillColor: [0, 0, 0] }
-      });
-    });
-    doc.save(`M-CDS_Coach_Export.pdf`);
+    if (error) alert("新增失败: " + error.message);
+    else loadData();
   };
 
   return (
-    <div className="coach-dashboard">
+    <div className="app-container">
       <style>{`
-        .coach-dashboard { background: #080a0f; color: #e2e8f0; min-height: 100vh; padding: 20px; font-family: 'Inter', sans-serif; }
-        .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-        .logo-box { display: flex; align-items: center; gap: 12px; }
-        .main-card { background: rgba(17, 25, 40, 0.75); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.1); border-radius: 24px; padding: 24px; }
-        .table-container { overflow-x: auto; margin-top: 20px; border-radius: 12px; }
-        .admin-table { width: 100%; border-collapse: collapse; min-width: 1000px; }
-        .admin-table th { text-align: left; padding: 16px; color: #718096; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid #1a202c; }
-        .admin-table td { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: middle; }
-        .admin-table tr:hover { background: rgba(255,255,255,0.02); }
-        .input-minimal { background: #000; border: 1px solid #2d3748; color: #facc15; padding: 8px; border-radius: 8px; width: 65px; font-weight: bold; text-align: center; outline: none; }
-        .input-minimal:focus { border-color: #facc15; box-shadow: 0 0 10px rgba(250,204,21,0.2); }
-        .name-cell { font-weight: 800; color: #fff; font-size: 15px; }
-        .badge-gap { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 900; }
-        .btn-action { padding: 10px 20px; border-radius: 12px; font-weight: 800; cursor: pointer; display: flex; align-items: center; gap: 8px; border: none; transition: 0.2s; }
-        .btn-blue { background: #3b82f6; color: white; }
-        .btn-gold { background: #facc15; color: black; }
-        .btn-save { background: none; color: #10b981; border: 1px solid #10b981; padding: 5px 10px; border-radius: 6px; }
-        .btn-save:disabled { opacity: 0.3; }
-        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .stat-item { background: #111827; padding: 20px; border-radius: 20px; border: 1px solid #1f2937; }
-        .stat-label { color: #6b7280; font-size: 12px; font-weight: bold; text-transform: uppercase; }
-        .stat-value { font-size: 24px; font-weight: 900; color: #fff; margin-top: 5px; }
+        .app-container { background: #05070a; color: #e2e8f0; min-height: 100vh; padding: 20px; font-family: sans-serif; }
+        .glass { background: rgba(15, 20, 28, 0.9); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; padding: 24px; }
+        .top-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+        .btn { padding: 10px 18px; border-radius: 12px; font-weight: 800; cursor: pointer; border: none; display: flex; align-items: center; gap: 8px; transition: 0.2s; }
+        .btn-gold { background: #facc15; color: #000; }
+        .btn-outline { background: none; border: 1px solid #2d3748; color: #718096; }
+        .admin-table { width: 100%; border-collapse: collapse; min-width: 900px; margin-top: 15px; }
+        .admin-table th { text-align: left; color: #4a5568; font-size: 10px; text-transform: uppercase; padding: 12px; }
+        .admin-table td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .input-mini { background: #000; border: 1px solid #2d3748; color: #facc15; padding: 6px; border-radius: 6px; width: 55px; text-align: center; font-weight: bold; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px; }
+        .modal-content { width: 100%; max-width: 900px; max-height: 90vh; overflow-y: auto; position: relative; }
+        .matrix-grid { width: 100%; overflow-x: auto; border-radius: 12px; background: #000; }
+        .matrix-table { width: 100%; border-collapse: collapse; min-width: 600px; }
+        .matrix-table td { padding: 15px 10px; text-align: center; border-bottom: 1px solid #111; }
+        .pace-box { font-family: monospace; font-size: 14px; color: #34d399; font-weight: bold; }
+        .range-box { font-size: 9px; color: #4a5568; }
       `}</style>
 
-      <header className="top-bar">
-        <div className="logo-box">
-          <div style={{background: '#facc15', padding: '10px', borderRadius: '14px'}}>
-            <Waves color="black" size={28} />
-          </div>
+      {/* 顶部导航 */}
+      <nav className="top-nav">
+        <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
+          <Waves color="#facc15" size={32} />
           <div>
-            <h1 style={{margin: 0, fontSize: '24px', fontWeight: 900, italic: 'italic'}}>M-CDS <span style={{color: '#facc15'}}>CLOUD</span></h1>
-            <p style={{margin: 0, fontSize: '10px', color: '#4a5568', fontWeight: 'bold'}}>Elite Athlete Management System</p>
+            <h1 style={{margin: 0, fontSize: '22px', fontWeight: 900}}>M-CDS <span style={{color:'#facc15'}}>ELITE</span></h1>
+            <span style={{fontSize: '10px', color: '#4a5568'}}>CLOUD MANAGEMENT V3.3</span>
           </div>
         </div>
-        <div style={{display: 'flex', gap: '12px'}}>
-          <button className="btn-action btn-blue" onClick={addAthlete}><Plus size={18}/> 新增运动员</button>
-          <button className="btn-action btn-gold" onClick={generateBatchPDF}><Printer size={18}/> 批量生成 PDF</button>
+        <div style={{display: 'flex', gap: '10px'}}>
+          <button className="btn btn-outline" onClick={() => setShowStandaloneCalc(true)}><Calculator size={18}/> 实时计算</button>
+          <button className="btn btn-gold" onClick={addAthlete}><Plus size={18}/> 新增运动员</button>
         </div>
-      </header>
+      </nav>
 
-      <div className="stat-grid">
-        <div className="stat-item">
-          <div className="stat-label">全队运动员</div>
-          <div className="stat-value">{athletes.length} <span style={{fontSize: '14px', color: '#4a5568'}}>PERSONS</span></div>
-        </div>
-        <div className="stat-item">
-          <div className="stat-label">最新同步时间</div>
-          <div className="stat-value" style={{fontSize: '18px'}}>{new Date().toLocaleTimeString()}</div>
-        </div>
-        <div className="stat-item">
-          <div className="stat-label">系统状态</div>
-          <div className="stat-value" style={{fontSize: '18px', color: '#10b981'}}>● ENCRYPTED</div>
-        </div>
-      </div>
-
-      <main className="main-card">
-        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-          <h2 style={{margin: 0, fontSize: '18px'}}>全队动态数据监控表</h2>
-          <div style={{fontSize: '12px', color: '#4a5568'}}>提示：修改数据后请点击右侧保存按钮同步云端</div>
-        </div>
-
-        <div className="table-container">
+      {/* 管理员大表格 */}
+      <main className="glass">
+        <div style={{overflowX: 'auto'}}>
           <table className="admin-table">
             <thead>
               <tr>
                 <th>姓名</th>
                 <th>年龄</th>
-                <th>PHV</th>
-                <th>T-Value(25m)</th>
-                <th>CSS(100m)</th>
-                <th>身高(cm)</th>
-                <th>体重(kg)</th>
-                <th>DPS</th>
-                <th>潜力分析 (AABI)</th>
+                <th>T-Value</th>
+                <th>CSS</th>
+                <th>潜力分析</th>
+                <th>查看计算器</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              {athletes.map(athlete => {
-                const draft = drafts[athlete.id] || {};
-                const currentT = draft.t_value ?? athlete.t_value;
-                const currentCSS = draft.css ?? athlete.css;
-                const analysis = getGapAnalysis(currentT, currentCSS);
-                const hasChanges = Object.keys(draft).length > 0;
-
+              {athletes.map(a => {
+                const draft = drafts[a.id] || {};
+                const t = draft.t_value ?? a.t_value;
+                const c = draft.css ?? a.css;
+                const analysis = getGapAnalysis(t, c);
                 return (
-                  <tr key={athlete.id}>
-                    <td className="name-cell">{athlete.name}</td>
+                  <tr key={a.id}>
+                    <td style={{fontWeight: 'bold'}}>{a.name}</td>
+                    <td><input className="input-mini" type="number" defaultValue={a.age} onChange={e=>setDrafts({...drafts, [a.id]: {...draft, age: parseInt(e.target.value)}})} /></td>
+                    <td><input className="input-mini" type="number" step="0.1" defaultValue={a.t_value} onChange={e=>setDrafts({...drafts, [a.id]: {...draft, t_value: parseFloat(e.target.value)}})} /></td>
+                    <td><input className="input-mini" type="number" step="0.1" defaultValue={a.css} onChange={e=>setDrafts({...drafts, [a.id]: {...draft, css: parseFloat(e.target.value)}})} /></td>
                     <td>
-                      <input className="input-minimal" type="number" defaultValue={athlete.age} 
-                        onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, age: parseInt(e.target.value)}})} />
+                      <span style={{color: analysis.color, fontSize: '11px', fontWeight: 'bold'}}>{analysis.label} ({analysis.aabi?.toFixed(2)})</span>
                     </td>
                     <td>
-                      <select className="input-minimal" style={{width: '85px'}} defaultValue={athlete.phv_stage}
-                        onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, phv_stage: e.target.value as any}})}>
-                        <option value="pre">Pre-PHV</option>
-                        <option value="post">Post-PHV</option>
-                      </select>
+                      <button className="btn-outline" style={{padding: '5px 10px'}} onClick={() => setActiveAthlete(a)}><Eye size={16}/></button>
                     </td>
                     <td>
-                      <input className="input-minimal" type="number" step="0.1" defaultValue={athlete.t_value}
-                        onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, t_value: parseFloat(e.target.value)}})} />
-                    </td>
-                    <td>
-                      <input className="input-minimal" type="number" step="0.1" defaultValue={athlete.css}
-                        onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, css: parseFloat(e.target.value)}})} />
-                    </td>
-                    <td>
-                      <input className="input-minimal" type="number" defaultValue={athlete.height} 
-                        onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, height: parseFloat(e.target.value)}})} />
-                    </td>
-                    <td>
-                      <input className="input-minimal" type="number" defaultValue={athlete.weight}
-                        onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, weight: parseFloat(e.target.value)}})} />
-                    </td>
-                    <td>
-                      <input className="input-minimal" type="number" step="0.01" defaultValue={athlete.dps}
-                        onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, dps: parseFloat(e.target.value)}})} />
-                    </td>
-                    <td>
-                      <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
-                        <span className="badge-gap" style={{background: analysis.color + '22', color: analysis.color}}>{analysis.label}</span>
-                        <span style={{fontSize: '10px', color: '#4a5568'}}>INDEX: {analysis.aabi?.toFixed(2)}</span>
-                      </div>
-                    </td>
-                    <td>
-                      <div style={{display: 'flex', gap: '10px'}}>
-                        <button className="btn-save" disabled={!hasChanges || savingId === athlete.id} onClick={() => saveAthlete(athlete.id)}>
-                          {savingId === athlete.id ? "..." : <Save size={16}/>}
-                        </button>
-                        <button className="btn-save" style={{color: '#3b82f6', borderColor: '#3b82f6'}} 
-                          onClick={() => window.open(`/share?token=${athlete.share_token}`)}>
-                          <Share2 size={16}/>
-                        </button>
+                      <div style={{display: 'flex', gap: '8px'}}>
+                        <button className="btn-outline" onClick={() => saveAthlete(a.id)} disabled={!drafts[a.id]}><Save size={16} color={drafts[a.id] ? "#facc15" : "#333"}/></button>
+                        <button className="btn-outline" onClick={() => window.open(`?token=${a.share_token}`)}><Share2 size={16}/></button>
                       </div>
                     </td>
                   </tr>
@@ -251,7 +180,47 @@ export default function Page() {
         </div>
       </main>
 
-      {loading && <div style={{textAlign: 'center', marginTop: '40px', color: '#facc15'}}>正在同步云端数据...</div>}
-    </div>
-  );
-}
+      {/* 弹窗：单人黑色科技计算器 (基于 Golden Version) */}
+      {activeAthlete && (
+        <div className="modal-overlay">
+          <div className="modal-content glass">
+            <button style={{position: 'absolute', top: 20, right: 20, background: 'none', border: 'none', color: '#fff'}} onClick={() => setActiveAthlete(null)}><X size={24}/></button>
+            <h2 style={{marginTop: 0}}><User size={20} inline /> {activeAthlete.name} 的训练指标</h2>
+            <div className="matrix-grid">
+              <table className="matrix-table">
+                <thead>
+                  <tr style={{background: '#111'}}>
+                    <th>强度</th>{DISTANCES.map(d=><th key={d}>{d}M</th>)}<th>10S心率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {calculateMCDS(activeAthlete.t_value, activeAthlete.css, activeAthlete.phv_stage, activeAthlete.age).map(row => (
+                    <tr key={row.zone}>
+                      <td style={{textAlign: 'left', fontWeight: 'bold'}}>{row.zone} <span style={{fontSize: '8px', color: '#4a5568'}}>{row.label}</span></td>
+                      {row.paces.map((p, i) => (
+                        <td key={i}>
+                          <div className="pace-box">{p.val}</div>
+                          <div className="range-box">{p.range}</div>
+                        </td>
+                      ))}
+                      <td style={{color: '#f87171', fontWeight: 'bold'}}>{row.hr}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <button className="btn btn-gold" style={{marginTop: '20px', width: '100%', justifyContent: 'center'}} onClick={() => window.print()}><Printer size={18}/> 打印此报告</button>
+          </div>
+        </div>
+      )}
+
+      {/* 独立实时计算器 (不存数据库) */}
+      {showStandaloneCalc && (
+        <div className="modal-overlay">
+          <div className="modal-content glass" style={{maxWidth: '500px'}}>
+             <button style={{position: 'absolute', top: 20, right: 20, background: 'none', border: 'none', color: '#fff'}} onClick={() => setShowStandaloneCalc(false)}><X size={24}/></button>
+             <h2>临时配速计算</h2>
+             <div style={{display: 'grid', gap: '15px'}}>
+                <div><label className="range-box">T-Value (25m)</label><input className="input-mini" style={{width: '100%'}} type="number" step="0.1" defaultValue="15.0" id="tempT" /></div>
+                <div><label className="range-box">CSS (100m)</label><input className="input-mini" style={{width: '100%'}} type="number" step="0.1" defaultValue="80.0" id="tempC" /></div>
+                <p style={{fo
