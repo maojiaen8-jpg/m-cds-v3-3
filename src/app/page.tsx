@@ -74,13 +74,27 @@ export default function Page() {
   const addAthlete = async () => {
     const name = prompt("姓名:");
     if (!name) return;
+    
+    // 生成一个更长的随机字符串作为 token
+    const randomToken =
+      Math.random().toString(36).substring(2) +
+      Math.random().toString(36).substring(2);
+
     const { error } = await supabase.from("athletes").insert([{ 
-      name, age: 14, t_value: 15.0, css: 80.0, phv_stage: 'post', 
-      share_token: Math.random().toString(36).substring(2),
+      name, 
+      age: 14, 
+      t_value: 15.0, 
+      css: 80.0, 
+      phv_stage: 'post', 
+      share_token: randomToken,
       height: 170, weight: 60, dps: 1.0
     }]);
-    if (error) alert("失败: " + error.message);
-    else loadData();
+
+    if (error) {
+      alert("失败: " + error.message);
+    } else {
+      loadData();
+    }
   };
 
   return (
