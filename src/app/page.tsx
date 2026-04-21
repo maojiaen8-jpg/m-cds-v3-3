@@ -1,220 +1,458 @@
 "use client";
 
-import React, { useState, useMemo } from 'react';
-import { Waves, Printer, Plus, Minus, Zap, Baby, Activity, User } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from "react";
+import { Printer, Save, ShieldCheck, Waves } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
-// --- 类型与配置 (保持你的核心逻辑) ---
-type StrokeKey = 'Free' | 'Back' | 'Fly' | 'Breast';
-type PoolKey = '25' | '50';
-type IntensityKey = 'SP' | 'TSP' | 'ANP' | 'ANE' | 'AES' | 'AEN' | 'BAE';
+type PhvStage = "pre" | "post";
 
-const DISTANCES = [25, 50, 100, 200, 400];
-const POOL_FACTORS = { '25': 1.0, '50': 1.035 };
-const ERROR_MARGIN = 0.02;
-
-const STROKE_FACTORS = {
-  'Free': { name: '自由泳 (FR)', factor: 1.0, color: '#10b981', maxDist: 400 },
-  'Back': { name: '仰泳 (BK)', factor: 1.06, color: '#3b82f6', maxDist: 400 },
-  'Fly': { name: '蝶泳 (FLY)', factor: 1.12, color: '#ec4899', maxDist: 200 },
-  'Breast': { name: '蛙泳 (BR)', factor: 1.18, color: '#f59e0b', maxDist: 200 }
+type Athlete = {
+  id: string;
+  name: string;
+  age: number | null;
+  phv_stage: PhvStage | null;
+  t_value: number | null;
+  css: number | null;
+  height: number | null;
+  weight: number | null;
+  dps: number | null;
+  share_token: string | null;
+  updated_at?: string | null;
 };
 
-const INTENSITY_CONFIG = {
-  SP: { name: 'SP', label: '绝对速度', color: '#ff4d4f', hrPct: 0.98, allowedDists: [25, 50] },
-  TSP: { name: 'TSP', label: '技术冲刺', color: '#ff7a45', hrPct: 0.95, allowedDists: [25, 50] },
-  ANP: { name: 'ANP', label: '无氧功率', color: '#ffc53d', hrPct: 0.92, allowedDists: [25, 50] },
-  ANE: { name: 'ANE', label: '无氧耐力', color: '#b37feb', hrPct: 0.88, allowedDists: [25, 50, 100, 200] },
-  AES: { name: 'AES', label: '有氧动力', color: '#40a9ff', hrPct: 0.82, allowedDists: [25, 50, 100, 200, 400] },
-  AEN: { name: 'AEN', label: '有氧耐力', color: '#73d13d', hrPct: 0.75, allowedDists: [25, 50, 100, 200, 400] },
-  BAE: { name: 'BAE', label: '基础有氧', color: '#8c8c8c', hrPct: 0.65, allowedDists: [25, 50, 100, 200, 400] }
+type Measurement = {
+  id: string;
+  athlete_id: string;
+  t_value: number | null;
+  css: number | null;
+  height: number | null;
+  weight: number | null;
+  dps: number | null;
+  created_at: string;
 };
 
-const formatTime = (seconds: number | null) => {
-  if (seconds === null || isNaN(seconds)) return '--';
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = (seconds % 60).toFixed(1);
-  return `${mins}:${secs.padStart(4, '0')}`;
-};
-
-const calculatePace = (id: string, t: number, css: number, poolFactor: number, stage: string, strokeFactor: number) => {
-  let base25 = 0;
-  switch(id) {
-    case 'SP': base25 = t * poolFactor; break;
-    case 'TSP': base25 = (t + 0.8) * poolFactor; break;
-    case 'ANP': base25 = (t + 2.5) * poolFactor; break;
-    case 'ANE': base25 = (t * 1.18) * poolFactor; break;
-    case 'AES': base25 = (stage === 'pre' ? (css / 4 * 1.015) : (t * 1.28)) * poolFactor; break;
-    case 'AEN': base25 = (stage === 'pre' ? (css / 4 * 1.055) : (t * 1.38)) * poolFactor; break;
-    case 'BAE': base25 = (stage === 'pre' ? (css / 4 * 1.18) : (t * 1.55)) * poolFactor; break;
-    default: base25 = t;
+type DraftEdits = Record<
+  string,
+  {
+    t_value: number;
+    css: number;
+    height: number;
+    weight: number;
+    dps: number;
+    age: number;
+    phv_stage: PhvStage;
   }
-  return base25 * strokeFactor;
+>;
+
+const num = (v: number | null | undefined) => (typeof v === "number" ? v : 0);
+
+const getGap = (tValue: number | null, css: number | null) => {
+  const t = num(tValue);
+  const c = num(css);
+  if (t <= 0 || c <= 0) {
+    return { label: "--", aabi: 0 };
+  }
+  const aabi = (c / 4) / t;
+  if (aabi > 1.05) return { label: "耐力缺口", aabi };
+  if (aabi < 0.95) return { label: "速度缺口", aabi };
+  return { label: "平衡", aabi };
 };
 
-export default function App() {
-  const [name, setName] = useState('');
-  const [age, setAge] = useState(14);
-  const [tValue, setTValue] = useState(15.2);
-  const [cssValue, setCssValue] = useState(84.5);
-  const [phvStage, setPhvStage] = useState<'pre' | 'post'>('post');
-  const [poolType, setPoolType] = useState<PoolKey>('25');
-  const [stroke, setStroke] = useState<StrokeKey>('Free');
+const formatMetric = (value: number | null, digits = 1) =>
+  typeof value === "number" ? value.toFixed(digits) : "--";
 
-  const maxHR = 220 - age;
+function TVTrendChart({ data }: { data: Measurement[] }) {
+  const points = useMemo(() => {
+    if (!data.length) return "";
+    const tValues = data.map((d) => num(d.t_value));
+    const min = Math.min(...tValues);
+    const max = Math.max(...tValues);
+    const span = Math.max(max - min, 1);
+    return data
+      .map((item, index) => {
+        const x = (index / Math.max(data.length - 1, 1)) * 100;
+        const y = 100 - ((num(item.t_value) - min) / span) * 100;
+        return `${x},${y}`;
+      })
+      .join(" ");
+  }, [data]);
 
-  const matrixData = useMemo(() => {
-    const results: any = {};
-    const strokeInfo = STROKE_FACTORS[stroke];
-    Object.keys(INTENSITY_CONFIG).forEach((id) => {
-      const cfg = (INTENSITY_CONFIG as any)[id];
-      const pace25 = calculatePace(id, tValue, cssValue, (POOL_FACTORS as any)[poolType], phvStage, strokeInfo.factor);
-      results[id] = DISTANCES.map(d => {
-        const isValid = cfg.allowedDists.includes(d) && d <= strokeInfo.maxDist;
-        const target = pace25 * (d / 25);
-        return { 
-          dist: d, val: isValid ? target : null, 
-          min: isValid ? target * (1 - ERROR_MARGIN) : null,
-          max: isValid ? target * (1 + ERROR_MARGIN) : null,
-          isNA: !isValid 
-        };
-      });
+  if (!data.length) {
+    return <div className="empty-line">暂无历史 T-Value 数据</div>;
+  }
+
+  return (
+    <div className="trend-box">
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="trend-svg">
+        <polyline fill="none" stroke="#f5c451" strokeWidth="1.8" points={points} />
+      </svg>
+      <div className="trend-legend">
+        {data.map((d) => (
+          <span key={d.id}>{new Date(d.created_at).toLocaleDateString()}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function Page() {
+  const [athletes, setAthletes] = useState<Athlete[]>([]);
+  const [historyMap, setHistoryMap] = useState<Record<string, Measurement[]>>({});
+  const [drafts, setDrafts] = useState<DraftEdits>({});
+  const [loading, setLoading] = useState(true);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const token = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    const params = new URLSearchParams(window.location.search);
+    return params.get("token") ?? "";
+  }, []);
+
+  const isParentView = Boolean(token);
+
+  const parentAthlete = useMemo(
+    () => athletes.find((a) => a.share_token === token) ?? null,
+    [athletes, token],
+  );
+
+  const loadData = async () => {
+    setLoading(true);
+    setErrorMsg("");
+    const { data: athleteRows, error: athleteError } = await supabase
+      .from("athletes")
+      .select("id,name,age,phv_stage,t_value,css,height,weight,dps,share_token,updated_at")
+      .order("name", { ascending: true });
+
+    if (athleteError) {
+      setErrorMsg(athleteError.message);
+      setLoading(false);
+      return;
+    }
+
+    const athletesData = (athleteRows ?? []) as Athlete[];
+    setAthletes(athletesData);
+
+    const { data: measurementsRows, error: mError } = await supabase
+      .from("measurements")
+      .select("id,athlete_id,t_value,css,height,weight,dps,created_at")
+      .order("created_at", { ascending: true });
+
+    if (mError) {
+      setErrorMsg(mError.message);
+      setLoading(false);
+      return;
+    }
+
+    const grouped: Record<string, Measurement[]> = {};
+    for (const row of (measurementsRows ?? []) as Measurement[]) {
+      if (!grouped[row.athlete_id]) grouped[row.athlete_id] = [];
+      grouped[row.athlete_id].push(row);
+    }
+    setHistoryMap(grouped);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    void loadData();
+  }, []);
+
+  const handleFieldChange = (
+    athlete: Athlete,
+    key: keyof DraftEdits[string],
+    value: string,
+  ) => {
+    const parsed =
+      key === "phv_stage"
+        ? (value as PhvStage)
+        : Number.isFinite(Number(value))
+          ? Number(value)
+          : 0;
+    setDrafts((prev) => {
+      const base = prev[athlete.id] ?? {
+        t_value: num(athlete.t_value),
+        css: num(athlete.css),
+        height: num(athlete.height),
+        weight: num(athlete.weight),
+        dps: num(athlete.dps),
+        age: num(athlete.age),
+        phv_stage: (athlete.phv_stage ?? "post") as PhvStage,
+      };
+      return {
+        ...prev,
+        [athlete.id]: {
+          ...base,
+          [key]: parsed as never,
+        },
+      };
     });
-    return results;
-  }, [tValue, cssValue, poolType, phvStage, stroke]);
+  };
+
+  const handleSave = async (athlete: Athlete) => {
+    const draft = drafts[athlete.id];
+    if (!draft) return;
+    setSavingId(athlete.id);
+    setErrorMsg("");
+
+    const updatePayload = {
+      age: draft.age,
+      phv_stage: draft.phv_stage,
+      t_value: draft.t_value,
+      css: draft.css,
+      height: draft.height,
+      weight: draft.weight,
+      dps: draft.dps,
+    };
+
+    const { error: updateError } = await supabase
+      .from("athletes")
+      .update(updatePayload)
+      .eq("id", athlete.id);
+
+    if (updateError) {
+      setErrorMsg(updateError.message);
+      setSavingId(null);
+      return;
+    }
+
+    const { error: insertError } = await supabase.from("measurements").insert({
+      athlete_id: athlete.id,
+      t_value: draft.t_value,
+      css: draft.css,
+      height: draft.height,
+      weight: draft.weight,
+      dps: draft.dps,
+    });
+
+    if (insertError) {
+      setErrorMsg(insertError.message);
+      setSavingId(null);
+      return;
+    }
+
+    await loadData();
+    setDrafts((prev) => {
+      const next = { ...prev };
+      delete next[athlete.id];
+      return next;
+    });
+    setSavingId(null);
+  };
+
+  const exportGroupPdf = () => {
+    window.print();
+  };
 
   return (
     <div className="mcds-container">
       <style>{`
-        .mcds-container { background: #0a0c10; color: #e2e8f0; min-height: 100vh; padding: 20px; font-family: sans-serif; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-        .card { background: #141923; border: 1px solid #2d3748; border-radius: 16px; padding: 20px; margin-bottom: 20px; }
-        .grid-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-        .input-box { background: #000; padding: 12px; border-radius: 12px; border: 1px solid #333; }
-        .label { font-size: 10px; color: #718096; font-weight: bold; text-transform: uppercase; margin-bottom: 4px; }
-        .big-number { font-size: 28px; font-weight: 900; color: #fff; }
-        .btn-group { display: flex; gap: 8px; }
-        .btn { background: #2d3748; border: none; color: white; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-        .btn-active { background: #10b981; color: black; }
-        
-        /* 强制水平表格 */
-        .table-container { overflow-x: auto; background: #141923; border-radius: 16px; border: 1px solid #2d3748; }
-        table { width: 100%; border-collapse: collapse; min-width: 600px; }
-        th { background: #1a202c; color: #718096; font-size: 10px; padding: 12px; text-align: center; text-transform: uppercase; }
-        td { padding: 16px 8px; border-bottom: 1px solid #1a202c; text-align: center; }
-        .zone-name { display: flex; align-items: center; gap: 8px; text-align: left; }
-        .color-bar { width: 4px; height: 24px; border-radius: 2px; }
-        .pace-main { font-size: 16px; font-weight: bold; color: #10b981; display: block; }
-        .pace-range { font-size: 9px; color: #4a5568; display: block; }
-        .hr-val { font-size: 18px; font-weight: bold; color: #f56565; }
-
+        .mcds-container { background: radial-gradient(circle at top, #151005, #08090d 45%, #020304 100%); color: #e6edf8; min-height: 100vh; padding: 16px; font-family: Inter, sans-serif; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 10px; flex-wrap: wrap; }
+        .title { margin: 0; font-size: 22px; font-weight: 900; letter-spacing: 0.5px; }
+        .gold { color: #f5c451; }
+        .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #6f5a20; background: linear-gradient(180deg, #2c220e, #171106); color: #f5d98d; padding: 8px 12px; border-radius: 10px; cursor: pointer; font-weight: 700; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .card { background: linear-gradient(180deg, rgba(18,18,24,0.95), rgba(9,9,12,0.95)); border: 1px solid #2f3542; border-radius: 14px; padding: 14px; margin-bottom: 14px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+        .table-wrap { overflow-x: auto; border: 1px solid #2f3542; border-radius: 14px; background: #0d1018; }
+        .athlete-table { width: 100%; min-width: 1120px; border-collapse: collapse; }
+        .athlete-table th, .athlete-table td { padding: 10px 8px; border-bottom: 1px solid #1a2231; text-align: center; }
+        .athlete-table th { font-size: 11px; text-transform: uppercase; color: #98a5ba; letter-spacing: 0.5px; background: #111722; white-space: nowrap; }
+        .athlete-table td.name { text-align: left; font-weight: 700; color: #f6f8ff; min-width: 140px; }
+        .metric-input { width: 74px; background: #070a0f; color: #f8d98f; border: 1px solid #2d3547; border-radius: 8px; padding: 6px; }
+        .metric-select { background: #070a0f; color: #f8d98f; border: 1px solid #2d3547; border-radius: 8px; padding: 6px; }
+        .tag { padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+        .gap-endurance { background: rgba(62, 207, 142, 0.18); color: #3ecf8e; }
+        .gap-speed { background: rgba(255, 107, 107, 0.2); color: #ff6b6b; }
+        .gap-balance { background: rgba(245, 196, 81, 0.2); color: #f5c451; }
+        .meta { color: #8f9db2; font-size: 12px; }
+        .error { color: #ff8d8d; margin-bottom: 10px; }
+        .dashboard-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
+        .kpi { border: 1px solid #3b3320; border-radius: 12px; background: #100f0a; padding: 12px; }
+        .kpi .label { font-size: 11px; color: #ad9a65; text-transform: uppercase; }
+        .kpi .value { margin-top: 6px; font-size: 24px; font-weight: 900; color: #f5d98d; }
+        .trend-box { border: 1px solid #3b3320; border-radius: 12px; background: #0d0a04; padding: 12px; }
+        .trend-svg { width: 100%; height: 220px; display: block; background: linear-gradient(180deg, rgba(245,196,81,0.05), transparent); border-radius: 8px; }
+        .trend-legend { margin-top: 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 4px; color: #7f8ca1; font-size: 10px; }
+        .empty-line { color: #6f7f98; font-size: 13px; padding: 18px; text-align: center; }
+        .print-only { display: none; }
+        @media (max-width: 768px) {
+          .dashboard-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+          .metric-input { width: 64px; }
+        }
         @media print {
           .no-print { display: none !important; }
-          .print-only { display: block !important; color: black !important; background: white !important; }
+          .print-only { display: block !important; color: #000; background: #fff; }
         }
-        .print-only { display: none; }
       `}</style>
 
       <div className="no-print">
         <header className="header">
-          <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
-            <Waves color="#10b981" size={24} />
-            <h1 style={{fontSize: '20px', fontWeight: '900', margin: 0}}>M-CDS <span style={{color: '#10b981'}}>ELITE</span></h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Waves size={24} color="#f5c451" />
+            <h1 className="title">
+              M-CDS <span className="gold">CLOUD COACH</span>
+            </h1>
           </div>
-          <button className="btn" onClick={() => window.print()}>打印</button>
+          {!isParentView && (
+            <button type="button" className="btn" onClick={exportGroupPdf}>
+              <Printer size={16} />
+              一键导出全组 PDF
+            </button>
+          )}
         </header>
 
-        <div className="grid-inputs">
-          <div className="input-box">
-            <div className="label">运动员</div>
-            <input value={name} onChange={e=>setName(e.target.value)} style={{background: 'none', border: 'none', color: 'white', fontWeight: 'bold', width: '100%'}} placeholder="姓名" />
-          </div>
-          <div className="input-box">
-            <div className="label">年龄</div>
-            <input type="number" value={age} onChange={e=>setAge(parseInt(e.target.value)||0)} style={{background: 'none', border: 'none', color: 'white', fontWeight: 'bold', width: '100%'}} />
-          </div>
-        </div>
+        {errorMsg && <div className="error">错误：{errorMsg}</div>}
+        {loading && <div className="meta">正在加载云端数据...</div>}
 
-        <div className="card" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-          <div>
-            <div className="label" style={{color: '#10b981'}}>T-Value (25m Max)</div>
-            <div className="big-number">{tValue}s</div>
+        {!loading && isParentView && !parentAthlete && (
+          <div className="card">
+            <div className="error">分享链接无效：未找到对应运动员。</div>
           </div>
-          <div className="btn-group">
-            <button className="btn" onClick={()=>setTValue(v=>Math.max(0,+(v-0.1).toFixed(1)))}>-</button>
-            <button className="btn" style={{background: '#10b981', color: 'black'}} onClick={()=>setTValue(v=>+(v+0.1).toFixed(1))}>+</button>
+        )}
+
+        {!loading && isParentView && parentAthlete && (
+          <div className="card">
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+              <h2 style={{ margin: 0 }}>
+                家长端看板 · <span className="gold">{parentAthlete.name}</span>
+              </h2>
+              <div className="meta" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <ShieldCheck size={14} /> 只读模式
+              </div>
+            </div>
+            <div className="dashboard-grid">
+              <div className="kpi"><div className="label">年龄</div><div className="value">{formatMetric(parentAthlete.age, 0)}</div></div>
+              <div className="kpi"><div className="label">PHV</div><div className="value">{parentAthlete.phv_stage ?? "--"}</div></div>
+              <div className="kpi"><div className="label">T-Value</div><div className="value">{formatMetric(parentAthlete.t_value)}s</div></div>
+              <div className="kpi"><div className="label">CSS</div><div className="value">{formatMetric(parentAthlete.css)}s</div></div>
+              <div className="kpi"><div className="label">身高</div><div className="value">{formatMetric(parentAthlete.height)}cm</div></div>
+              <div className="kpi"><div className="label">体重</div><div className="value">{formatMetric(parentAthlete.weight)}kg</div></div>
+              <div className="kpi"><div className="label">DPS</div><div className="value">{formatMetric(parentAthlete.dps, 2)}</div></div>
+              <div className="kpi">
+                <div className="label">Gap Analysis</div>
+                <div className="value" style={{ fontSize: 20 }}>{getGap(parentAthlete.t_value, parentAthlete.css).label}</div>
+              </div>
+            </div>
+            <h3 style={{ marginTop: 8, marginBottom: 8 }}>历史 T-Value 趋势</h3>
+            <TVTrendChart data={historyMap[parentAthlete.id] ?? []} />
           </div>
-        </div>
+        )}
 
-        <div className="card" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-          <div>
-            <div className="label" style={{color: '#3b82f6'}}>CSS (100m Endurance)</div>
-            <div className="big-number">{cssValue}s</div>
+        {!loading && !isParentView && (
+          <div className="card">
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <h2 style={{ margin: 0 }}>运动员总表（云端）</h2>
+                <div className="meta">默认展示全队名单，支持直接编辑并保存到 Supabase。</div>
+              </div>
+              <div className="meta">当前人数：{athletes.length}</div>
+            </div>
+            <div className="table-wrap">
+              <table className="athlete-table">
+                <thead>
+                  <tr>
+                    <th>姓名</th>
+                    <th>年龄</th>
+                    <th>PHV</th>
+                    <th>最新 T-Value</th>
+                    <th>最新 CSS</th>
+                    <th>身高</th>
+                    <th>体重</th>
+                    <th>DPS</th>
+                    <th>潜力分析</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {athletes.map((athlete) => {
+                    const draft = drafts[athlete.id];
+                    const current = draft ?? {
+                      age: num(athlete.age),
+                      phv_stage: (athlete.phv_stage ?? "post") as PhvStage,
+                      t_value: num(athlete.t_value),
+                      css: num(athlete.css),
+                      height: num(athlete.height),
+                      weight: num(athlete.weight),
+                      dps: num(athlete.dps),
+                    };
+                    const gap = getGap(current.t_value, current.css);
+                    const gapClass =
+                      gap.label === "耐力缺口"
+                        ? "gap-endurance"
+                        : gap.label === "速度缺口"
+                          ? "gap-speed"
+                          : "gap-balance";
+                    return (
+                      <tr key={athlete.id}>
+                        <td className="name">{athlete.name}</td>
+                        <td><input className="metric-input" type="number" value={current.age} onChange={(e) => handleFieldChange(athlete, "age", e.target.value)} /></td>
+                        <td>
+                          <select className="metric-select" value={current.phv_stage} onChange={(e) => handleFieldChange(athlete, "phv_stage", e.target.value)}>
+                            <option value="pre">pre</option>
+                            <option value="post">post</option>
+                          </select>
+                        </td>
+                        <td><input className="metric-input" type="number" step="0.1" value={current.t_value} onChange={(e) => handleFieldChange(athlete, "t_value", e.target.value)} /></td>
+                        <td><input className="metric-input" type="number" step="0.1" value={current.css} onChange={(e) => handleFieldChange(athlete, "css", e.target.value)} /></td>
+                        <td><input className="metric-input" type="number" step="0.1" value={current.height} onChange={(e) => handleFieldChange(athlete, "height", e.target.value)} /></td>
+                        <td><input className="metric-input" type="number" step="0.1" value={current.weight} onChange={(e) => handleFieldChange(athlete, "weight", e.target.value)} /></td>
+                        <td><input className="metric-input" type="number" step="0.01" value={current.dps} onChange={(e) => handleFieldChange(athlete, "dps", e.target.value)} /></td>
+                        <td>
+                          <span className={`tag ${gapClass}`}>
+                            {gap.label} {gap.aabi > 0 ? `(${gap.aabi.toFixed(2)})` : ""}
+                          </span>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={!draft || savingId === athlete.id}
+                            onClick={() => handleSave(athlete)}
+                          >
+                            <Save size={14} />
+                            {savingId === athlete.id ? "保存中..." : "保存"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
-          <div className="btn-group">
-            <button className="btn" onClick={()=>setCssValue(v=>Math.max(0,+(v-0.5).toFixed(1)))}>-</button>
-            <button className="btn" style={{background: '#3b82f6'}} onClick={()=>setCssValue(v=>+(v+0.5).toFixed(1))}>+</button>
-          </div>
-        </div>
-
-        <div className="btn-group" style={{marginBottom: '20px'}}>
-          <button className={`btn ${phvStage === 'pre' ? 'btn-active' : ''}`} style={{flex: 1}} onClick={()=>setPhvStage('pre')}>PRE-PHV</button>
-          <button className={`btn ${phvStage === 'post' ? 'btn-active' : ''}`} style={{flex: 1}} onClick={()=>setPhvStage('post')}>POST-PHV</button>
-        </div>
-
-        <div className="grid-inputs">
-          <select value={stroke} onChange={e=>setStroke(e.target.value as any)} className="btn" style={{width: '100%', textAlign: 'left'}}>
-            {Object.keys(STROKE_FACTORS).map(k=><option key={k} value={k}>{(STROKE_FACTORS as any)[k].name}</option>)}
-          </select>
-          <select value={poolType} onChange={e=>setPoolType(e.target.value as any)} className="btn" style={{width: '100%', textAlign: 'left'}}>
-            <option value="25">25M 短池</option>
-            <option value="50">50M 长池</option>
-          </select>
-        </div>
-
-        <div className="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th style={{textAlign: 'left'}}>强度区域</th>
-                {DISTANCES.map(d=><th key={d}>{d}M</th>)}
-                <th>HR/10S</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(INTENSITY_CONFIG).map(([id, cfg]: any) => (
-                <tr key={id}>
-                  <td>
-                    <div className="zone-name">
-                      <div className="color-bar" style={{background: cfg.color}}></div>
-                      <div style={{fontWeight: 'bold'}}>{id}</div>
-                    </div>
-                  </td>
-                  {matrixData[id].map((cell: any, i: number) => (
-                    <td key={i}>
-                      {cell.isNA ? '--' : (
-                        <>
-                          <span className="pace-main">{formatTime(cell.val)}</span>
-                          <span className="pace-range">{formatTime(cell.min)}-{formatTime(cell.max)}</span>
-                        </>
-                      )}
-                    </td>
-                  ))}
-                  <td>
-                    <div className="hr-val">{Math.round(maxHR * cfg.hrPct / 6)}</div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        )}
       </div>
 
       <div className="print-only">
-        <h1>M-CDS PERFORMANCE MATRIX</h1>
-        <p>运动员: {name} | 基准: T-{tValue}s / CSS-{cssValue}s</p>
-        <hr />
-        {/* 这里可以放打印专用的简化表格 */}
+        <h1>M-CDS CLOUD ATHLETES REPORT</h1>
+        <p>导出时间：{new Date().toLocaleString()}</p>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", borderBottom: "1px solid #333" }}>姓名</th>
+              <th style={{ borderBottom: "1px solid #333" }}>年龄</th>
+              <th style={{ borderBottom: "1px solid #333" }}>PHV</th>
+              <th style={{ borderBottom: "1px solid #333" }}>T</th>
+              <th style={{ borderBottom: "1px solid #333" }}>CSS</th>
+              <th style={{ borderBottom: "1px solid #333" }}>AABI</th>
+            </tr>
+          </thead>
+          <tbody>
+            {athletes.map((a) => {
+              const gap = getGap(a.t_value, a.css);
+              return (
+                <tr key={`p-${a.id}`}>
+                  <td style={{ padding: "4px 0" }}>{a.name}</td>
+                  <td style={{ textAlign: "center" }}>{formatMetric(a.age, 0)}</td>
+                  <td style={{ textAlign: "center" }}>{a.phv_stage ?? "--"}</td>
+                  <td style={{ textAlign: "center" }}>{formatMetric(a.t_value)}</td>
+                  <td style={{ textAlign: "center" }}>{formatMetric(a.css)}</td>
+                  <td style={{ textAlign: "center" }}>{gap.aabi > 0 ? gap.aabi.toFixed(2) : "--"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
