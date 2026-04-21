@@ -1,544 +1,247 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Printer, Save, ShieldCheck, Waves } from "lucide-react";
+import { 
+  Printer, Save, ShieldCheck, Waves, Plus, UserPlus, 
+  TrendingUp, Activity, Zap, Baby, LayoutDashboard, Share2 
+} from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
+// --- 类型定义 ---
 type PhvStage = "pre" | "post";
-
 type Athlete = {
-  id: string;
-  name: string;
-  age: number | null;
-  phv_stage: PhvStage | null;
-  t_value: number | null;
-  css: number | null;
-  height: number | null;
-  weight: number | null;
-  dps: number | null;
-  share_token: string | null;
-  updated_at?: string | null;
+  id: string; name: string; age: number; phv_stage: PhvStage;
+  t_value: number; css: number; height: number; weight: number;
+  dps: number; share_token: string;
 };
 
-type Measurement = {
-  id: string;
-  athlete_id: string;
-  t_value: number | null;
-  css: number | null;
-  height: number | null;
-  weight: number | null;
-  dps: number | null;
-  created_at: string;
+// --- 核心配置 (用于 PDF 和计算) ---
+const DISTANCES = [25, 50, 100, 200, 400];
+const STROKE_FACTOR = 1.0; // 默认自由泳
+
+const calculateMCDS = (athlete: Athlete) => {
+  const t = athlete.t_value;
+  const css = athlete.css;
+  const stage = athlete.phv_stage;
+  
+  const getPace = (id: string) => {
+    let base25 = 0;
+    if (id === 'SP') base25 = t;
+    else if (id === 'TSP') base25 = t + 0.8;
+    else if (id === 'ANP') base25 = t + 2.5;
+    else if (id === 'ANE') base25 = t * 1.18;
+    else if (id === 'AES') base25 = (stage === 'pre' ? (css / 4 * 1.015) : (t * 1.28));
+    else if (id === 'AEN') base25 = (stage === 'pre' ? (css / 4 * 1.055) : (t * 1.38));
+    else if (id === 'BAE') base25 = (stage === 'pre' ? (css / 4 * 1.18) : (t * 1.55));
+    return base25;
+  };
+
+  return ['SP', 'TSP', 'ANP', 'ANE', 'AES', 'AEN', 'BAE'].map(zone => ({
+    zone,
+    paces: DISTANCES.map(d => (getPace(zone) * (d / 25)).toFixed(1) + 's'),
+    hr: Math.round(((220 - athlete.age) * (zone === 'SP' ? 0.98 : 0.85)) / 6)
+  }));
 };
-
-type DraftEdits = Record<
-  string,
-  {
-    t_value: number;
-    css: number;
-    height: number;
-    weight: number;
-    dps: number;
-    age: number;
-    phv_stage: PhvStage;
-  }
->;
-
-const num = (v: number | null | undefined) => (typeof v === "number" ? v : 0);
-
-const getGap = (tValue: number | null, css: number | null) => {
-  const t = num(tValue);
-  const c = num(css);
-  if (t <= 0 || c <= 0) {
-    return { label: "--", aabi: 0 };
-  }
-  const aabi = (c / 4) / t;
-  if (aabi > 1.05) return { label: "耐力缺口", aabi };
-  if (aabi < 0.95) return { label: "速度缺口", aabi };
-  return { label: "平衡", aabi };
-};
-
-const formatMetric = (value: number | null, digits = 1) =>
-  typeof value === "number" ? value.toFixed(digits) : "--";
-
-function TVTrendChart({ data }: { data: Measurement[] }) {
-  const points = useMemo(() => {
-    if (!data.length) return "";
-    const tValues = data.map((d) => num(d.t_value));
-    const min = Math.min(...tValues);
-    const max = Math.max(...tValues);
-    const span = Math.max(max - min, 1);
-    return data
-      .map((item, index) => {
-        const x = (index / Math.max(data.length - 1, 1)) * 100;
-        const y = 100 - ((num(item.t_value) - min) / span) * 100;
-        return `${x},${y}`;
-      })
-      .join(" ");
-  }, [data]);
-
-  if (!data.length) {
-    return <div className="empty-line">暂无历史 T-Value 数据</div>;
-  }
-
-  return (
-    <div className="trend-box">
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="trend-svg">
-        <polyline fill="none" stroke="#f5c451" strokeWidth="1.8" points={points} />
-      </svg>
-      <div className="trend-legend">
-        {data.map((d) => (
-          <span key={d.id}>{new Date(d.created_at).toLocaleDateString()}</span>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 export default function Page() {
   const [athletes, setAthletes] = useState<Athlete[]>([]);
-  const [historyMap, setHistoryMap] = useState<Record<string, Measurement[]>>({});
-  const [drafts, setDrafts] = useState<DraftEdits>({});
+  const [drafts, setDrafts] = useState<Record<string, Partial<Athlete>>>({});
   const [loading, setLoading] = useState(true);
-  const [savingId, setSavingId] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState("");
-  const [showRealtimeCalculator, setShowRealtimeCalculator] = useState(false);
-  const [calculatorTValue, setCalculatorTValue] = useState(15.2);
-  const [calculatorCss, setCalculatorCss] = useState(84.5);
-  const [calculatorPhv, setCalculatorPhv] = useState<PhvStage>("post");
+  const [view, setView] = useState<'coach' | 'parent'>('coach');
+  const [activeToken, setActiveToken] = useState("");
 
-  const token = useMemo(() => {
-    if (typeof window === "undefined") return "";
-    const params = new URLSearchParams(window.location.search);
-    return params.get("token") ?? "";
-  }, []);
-
-  const isParentView = Boolean(token);
-
-  const parentAthlete = useMemo(
-    () => athletes.find((a) => a.share_token === token) ?? null,
-    [athletes, token],
-  );
-
+  // --- 加载数据 ---
   const loadData = async () => {
     setLoading(true);
-    setErrorMsg("");
-    const { data: athleteRows, error: athleteError } = await supabase
-      .from("athletes")
-      .select("id,name,age,phv_stage,t_value,css,height,weight,dps,share_token,updated_at")
-      .order("name", { ascending: true });
-
-    if (athleteError) {
-      setErrorMsg(athleteError.message);
-      setLoading(false);
-      return;
-    }
-
-    const athletesData = (athleteRows ?? []) as Athlete[];
-    setAthletes(athletesData);
-
-    const { data: measurementsRows, error: mError } = await supabase
-      .from("measurements")
-      .select("id,athlete_id,t_value,css,height,weight,dps,created_at")
-      .order("created_at", { ascending: true });
-
-    if (mError) {
-      setErrorMsg(mError.message);
-      setLoading(false);
-      return;
-    }
-
-    const grouped: Record<string, Measurement[]> = {};
-    for (const row of (measurementsRows ?? []) as Measurement[]) {
-      if (!grouped[row.athlete_id]) grouped[row.athlete_id] = [];
-      grouped[row.athlete_id].push(row);
-    }
-    setHistoryMap(grouped);
+    const { data } = await supabase.from("athletes").select("*").order("created_at");
+    if (data) setAthletes(data);
     setLoading(false);
   };
 
   useEffect(() => {
-    void loadData();
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    if (token) {
+      setActiveToken(token);
+      setView('parent');
+    }
+    loadData();
   }, []);
 
-  const handleFieldChange = (
-    athlete: Athlete,
-    key: keyof DraftEdits[string],
-    value: string,
-  ) => {
-    const parsed =
-      key === "phv_stage"
-        ? (value as PhvStage)
-        : Number.isFinite(Number(value))
-          ? Number(value)
-          : 0;
-    setDrafts((prev) => {
-      const base = prev[athlete.id] ?? {
-        t_value: num(athlete.t_value),
-        css: num(athlete.css),
-        height: num(athlete.height),
-        weight: num(athlete.weight),
-        dps: num(athlete.dps),
-        age: num(athlete.age),
-        phv_stage: (athlete.phv_stage ?? "post") as PhvStage,
-      };
-      return {
-        ...prev,
-        [athlete.id]: {
-          ...base,
-          [key]: parsed as never,
-        },
-      };
-    });
-  };
-
-  const handleSave = async (athlete: Athlete) => {
-    const draft = drafts[athlete.id];
-    if (!draft) return;
-    setSavingId(athlete.id);
-    setErrorMsg("");
-
-    const updatePayload = {
-      age: draft.age,
-      phv_stage: draft.phv_stage,
-      t_value: draft.t_value,
-      css: draft.css,
-      height: draft.height,
-      weight: draft.weight,
-      dps: draft.dps,
-    };
-
-    const { error: updateError } = await supabase
-      .from("athletes")
-      .update(updatePayload)
-      .eq("id", athlete.id);
-
-    if (updateError) {
-      setErrorMsg(updateError.message);
-      setSavingId(null);
-      return;
-    }
-
-    const { error: insertError } = await supabase.from("measurements").insert({
-      athlete_id: athlete.id,
-      t_value: draft.t_value,
-      css: draft.css,
-      height: draft.height,
-      weight: draft.weight,
-      dps: draft.dps,
-    });
-
-    if (insertError) {
-      setErrorMsg(insertError.message);
-      setSavingId(null);
-      return;
-    }
-
-    await loadData();
-    setDrafts((prev) => {
-      const next = { ...prev };
-      delete next[athlete.id];
-      return next;
-    });
-    setSavingId(null);
-  };
-
-  const exportGroupPdf = () => {
-    window.print();
-  };
-
-  const realtimeData = useMemo(() => {
-    const t = Math.max(calculatorTValue, 0.1);
-    const css = Math.max(calculatorCss, 0.1);
+  // --- 潜力值分析核心逻辑 ---
+  const getGapAnalysis = (t: number, css: number) => {
+    if (!t || !css) return { label: "--", color: "#666" };
     const aabi = (css / 4) / t;
-    return {
-      aabi,
-      gap: getGap(t, css).label,
-      speed25: t,
-      anaerobic50: (t + 2.5) * 2,
-      aerobic100: calculatorPhv === "pre" ? css * 1.015 : t * 1.28 * 4,
-      endurance200: calculatorPhv === "pre" ? css * 2.11 : t * 1.38 * 8,
-    };
-  }, [calculatorCss, calculatorPhv, calculatorTValue]);
+    if (aabi < 1.15) return { label: "耐力缺口", color: "#ff4d4f", aabi };
+    if (aabi > 1.25) return { label: "速度缺口", color: "#ffa940", aabi };
+    return { label: "平衡", color: "#52c41a", aabi };
+  };
+
+  // --- 批量保存 ---
+  const saveAthlete = async (id: string) => {
+    const edit = drafts[id];
+    if (!edit) return;
+    const { error } = await supabase.from("athletes").update(edit).eq("id", id);
+    if (!error) {
+      await supabase.from("measurements").insert({
+        athlete_id: id, ...edit
+      });
+      loadData();
+      const newDrafts = { ...drafts };
+      delete newDrafts[id];
+      setDrafts(newDrafts);
+    }
+  };
+
+  // --- 新增运动员 ---
+  const addAthlete = async () => {
+    const name = prompt("请输入运动员姓名:");
+    if (!name) return;
+    await supabase.from("athletes").insert({ name, t_value: 15, css: 80, age: 12 });
+    loadData();
+  };
+
+  // --- 核心功能：批量生成多页 PDF ---
+  const generateBatchPDF = () => {
+    const doc = new jsPDF('p', 'mm', 'a4');
+    athletes.forEach((athlete, index) => {
+      if (index !== 0) doc.addPage();
+      
+      // 页眉
+      doc.setFontSize(20);
+      doc.setTextColor(0, 0, 0);
+      doc.text("M-CDS PERFORMANCE REPORT", 14, 20);
+      
+      doc.setFontSize(10);
+      doc.text(`ATHLETE: ${athlete.name} | AGE: ${athlete.age} | T-VAL: ${athlete.t_value}s | CSS: ${athlete.css}s`, 14, 28);
+      
+      const matrix = calculateMCDS(athlete);
+      autoTable(doc, {
+        startY: 35,
+        head: [['ZONE', '25M', '50M', '100M', '200M', '400M', 'HR/10S']],
+        body: matrix.map(row => [row.zone, ...row.paces, row.hr]),
+        theme: 'striped',
+        headStyles: { fillStyle: 'DF', fillColor: [0, 0, 0] }
+      });
+    });
+    doc.save(`M-CDS_Batch_Report_${new Date().toLocaleDateString()}.pdf`);
+  };
+
+  const currentAthlete = athletes.find(a => a.share_token === activeToken);
 
   return (
-    <div className="mcds-container">
+    <div className="system-container">
       <style>{`
-        .mcds-container { background: radial-gradient(circle at top, #151005, #08090d 45%, #020304 100%); color: #e6edf8; min-height: 100vh; padding: 16px; font-family: Inter, sans-serif; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 10px; flex-wrap: wrap; }
-        .title { margin: 0; font-size: 22px; font-weight: 900; letter-spacing: 0.5px; }
-        .gold { color: #f5c451; }
-        .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #6f5a20; background: linear-gradient(180deg, #2c220e, #171106); color: #f5d98d; padding: 8px 12px; border-radius: 10px; cursor: pointer; font-weight: 700; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .card { background: linear-gradient(180deg, rgba(18,18,24,0.95), rgba(9,9,12,0.95)); border: 1px solid #2f3542; border-radius: 14px; padding: 14px; margin-bottom: 14px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
-        .table-wrap { overflow-x: auto; border: 1px solid #2f3542; border-radius: 14px; background: #0d1018; }
-        .athlete-table { width: 100%; min-width: 1120px; border-collapse: collapse; }
-        .athlete-table th, .athlete-table td { padding: 10px 8px; border-bottom: 1px solid #1a2231; text-align: center; }
-        .athlete-table th { font-size: 11px; text-transform: uppercase; color: #98a5ba; letter-spacing: 0.5px; background: #111722; white-space: nowrap; }
-        .athlete-table td.name { text-align: left; font-weight: 700; color: #f6f8ff; min-width: 140px; }
-        .metric-input { width: 74px; background: #070a0f; color: #f8d98f; border: 1px solid #2d3547; border-radius: 8px; padding: 6px; }
-        .metric-select { background: #070a0f; color: #f8d98f; border: 1px solid #2d3547; border-radius: 8px; padding: 6px; }
-        .tag { padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
-        .gap-endurance { background: rgba(62, 207, 142, 0.18); color: #3ecf8e; }
-        .gap-speed { background: rgba(255, 107, 107, 0.2); color: #ff6b6b; }
-        .gap-balance { background: rgba(245, 196, 81, 0.2); color: #f5c451; }
-        .meta { color: #8f9db2; font-size: 12px; }
-        .error { color: #ff8d8d; margin-bottom: 10px; }
-        .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .dashboard-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
-        .kpi { border: 1px solid #3b3320; border-radius: 12px; background: #100f0a; padding: 12px; }
-        .kpi .label { font-size: 11px; color: #ad9a65; text-transform: uppercase; }
-        .kpi .value { margin-top: 6px; font-size: 24px; font-weight: 900; color: #f5d98d; }
-        .trend-box { border: 1px solid #3b3320; border-radius: 12px; background: #0d0a04; padding: 12px; }
-        .trend-svg { width: 100%; height: 220px; display: block; background: linear-gradient(180deg, rgba(245,196,81,0.05), transparent); border-radius: 8px; }
-        .trend-legend { margin-top: 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 4px; color: #7f8ca1; font-size: 10px; }
-        .empty-line { color: #6f7f98; font-size: 13px; padding: 18px; text-align: center; }
-        .calc-grid { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
-        .calc-label { font-size: 11px; color: #ad9a65; margin-bottom: 4px; }
-        .calc-input { width: 100%; background: #070a0f; color: #f8d98f; border: 1px solid #2d3547; border-radius: 8px; padding: 8px; }
-        .calc-result { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 10px; }
-        .print-only { display: none; }
-        @media (max-width: 768px) {
-          .dashboard-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
-          .calc-grid, .calc-result { grid-template-columns: 1fr; }
-          .metric-input { width: 64px; }
-        }
-        @media print {
-          .no-print { display: none !important; }
-          .print-only { display: block !important; color: #000; background: #fff; }
-        }
+        .system-container { background: #05070a; color: #e2e8f0; min-height: 100vh; font-family: 'Inter', sans-serif; }
+        .glass-card { background: rgba(15, 20, 28, 0.8); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.05); border-radius: 20px; }
+        .neon-text { color: #10b981; text-shadow: 0 0 10px rgba(16,185,129,0.3); }
+        .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .data-table th { background: #0d1117; color: #718096; padding: 12px; text-align: left; font-size: 10px; text-transform: uppercase; }
+        .data-table td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .input-dark { background: #000; border: 1px solid #2d3748; color: #10b981; padding: 5px; border-radius: 6px; width: 60px; font-weight: bold; text-align: center; }
+        .badge { padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: bold; }
+        .btn-primary { background: #10b981; color: #000; font-weight: 800; padding: 8px 16px; border-radius: 12px; display: flex; align-items: center; gap: 8px; }
       `}</style>
 
-      <div className="no-print">
-        <header className="header">
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Waves size={24} color="#f5c451" />
-            <h1 className="title">
-              M-CDS <span className="gold">CLOUD COACH</span>
-            </h1>
-          </div>
-          {!isParentView && (
-            <div className="toolbar">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setShowRealtimeCalculator((prev) => !prev)}
-              >
-                {showRealtimeCalculator ? "返回运动员列表" : "切换到实时计算"}
-              </button>
-              <button type="button" className="btn" onClick={exportGroupPdf}>
-                <Printer size={16} />
-                一键导出全组 PDF
-              </button>
+      {view === 'coach' ? (
+        <div className="p-6 space-y-6">
+          <header className="flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <Waves className="neon-text" size={32} />
+              <h1 className="text-2xl font-black italic uppercase tracking-tighter">M-CDS <span className="neon-text">Cloud Coach</span></h1>
             </div>
-          )}
-        </header>
-
-        {errorMsg && <div className="error">错误：{errorMsg}</div>}
-        {loading && <div className="meta">正在加载云端数据...</div>}
-
-        {!loading && isParentView && !parentAthlete && (
-          <div className="card">
-            <div className="error">分享链接无效：未找到对应运动员。</div>
-          </div>
-        )}
-
-        {!loading && isParentView && parentAthlete && (
-          <div className="card">
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-              <h2 style={{ margin: 0 }}>
-                家长端看板 · <span className="gold">{parentAthlete.name}</span>
-              </h2>
-              <div className="meta" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                <ShieldCheck size={14} /> 只读模式
-              </div>
+            <div className="flex gap-3">
+              <button onClick={addAthlete} className="btn-primary" style={{background: '#3b82f6'}}><UserPlus size={18}/>新增运动员</button>
+              <button onClick={generateBatchPDF} className="btn-primary"><Printer size={18}/>批量生成 PDF</button>
             </div>
-            <div className="dashboard-grid">
-              <div className="kpi"><div className="label">年龄</div><div className="value">{formatMetric(parentAthlete.age, 0)}</div></div>
-              <div className="kpi"><div className="label">PHV</div><div className="value">{parentAthlete.phv_stage ?? "--"}</div></div>
-              <div className="kpi"><div className="label">T-Value</div><div className="value">{formatMetric(parentAthlete.t_value)}s</div></div>
-              <div className="kpi"><div className="label">CSS</div><div className="value">{formatMetric(parentAthlete.css)}s</div></div>
-              <div className="kpi"><div className="label">身高</div><div className="value">{formatMetric(parentAthlete.height)}cm</div></div>
-              <div className="kpi"><div className="label">体重</div><div className="value">{formatMetric(parentAthlete.weight)}kg</div></div>
-              <div className="kpi"><div className="label">DPS</div><div className="value">{formatMetric(parentAthlete.dps, 2)}</div></div>
-              <div className="kpi">
-                <div className="label">Gap Analysis</div>
-                <div className="value" style={{ fontSize: 20 }}>{getGap(parentAthlete.t_value, parentAthlete.css).label}</div>
-              </div>
-            </div>
-            <h3 style={{ marginTop: 8, marginBottom: 8 }}>历史 T-Value 趋势</h3>
-            <TVTrendChart data={historyMap[parentAthlete.id] ?? []} />
-          </div>
-        )}
+          </header>
 
-        {!loading && !isParentView && !showRealtimeCalculator && (
-          <div className="card">
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
-              <div>
-                <h2 style={{ margin: 0 }}>运动员总表（云端）</h2>
-                <div className="meta">默认展示全队名单，支持直接编辑并保存到 Supabase。</div>
-              </div>
-              <div className="meta">当前人数：{athletes.length}</div>
-            </div>
-            <div className="table-wrap">
-              <table className="athlete-table">
-                <thead>
-                  <tr>
-                    <th>姓名</th>
-                    <th>年龄</th>
-                    <th>PHV</th>
-                    <th>最新 T-Value</th>
-                    <th>最新 CSS</th>
-                    <th>身高</th>
-                    <th>体重</th>
-                    <th>DPS</th>
-                    <th>潜力分析</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {athletes.map((athlete) => {
-                    const draft = drafts[athlete.id];
-                    const current = draft ?? {
-                      age: num(athlete.age),
-                      phv_stage: (athlete.phv_stage ?? "post") as PhvStage,
-                      t_value: num(athlete.t_value),
-                      css: num(athlete.css),
-                      height: num(athlete.height),
-                      weight: num(athlete.weight),
-                      dps: num(athlete.dps),
-                    };
-                    const gap = getGap(current.t_value, current.css);
-                    const gapClass =
-                      gap.label === "耐力缺口"
-                        ? "gap-endurance"
-                        : gap.label === "速度缺口"
-                          ? "gap-speed"
-                          : "gap-balance";
-                    return (
-                      <tr key={athlete.id}>
-                        <td className="name">{athlete.name}</td>
-                        <td><input className="metric-input" type="number" value={current.age} onChange={(e) => handleFieldChange(athlete, "age", e.target.value)} /></td>
-                        <td>
-                          <select className="metric-select" value={current.phv_stage} onChange={(e) => handleFieldChange(athlete, "phv_stage", e.target.value)}>
-                            <option value="pre">pre</option>
-                            <option value="post">post</option>
-                          </select>
-                        </td>
-                        <td><input className="metric-input" type="number" step="0.1" value={current.t_value} onChange={(e) => handleFieldChange(athlete, "t_value", e.target.value)} /></td>
-                        <td><input className="metric-input" type="number" step="0.1" value={current.css} onChange={(e) => handleFieldChange(athlete, "css", e.target.value)} /></td>
-                        <td><input className="metric-input" type="number" step="0.1" value={current.height} onChange={(e) => handleFieldChange(athlete, "height", e.target.value)} /></td>
-                        <td><input className="metric-input" type="number" step="0.1" value={current.weight} onChange={(e) => handleFieldChange(athlete, "weight", e.target.value)} /></td>
-                        <td><input className="metric-input" type="number" step="0.01" value={current.dps} onChange={(e) => handleFieldChange(athlete, "dps", e.target.value)} /></td>
-                        <td>
-                          <span className={`tag ${gapClass}`}>
-                            {gap.label} {gap.aabi > 0 ? `(${gap.aabi.toFixed(2)})` : ""}
-                          </span>
-                        </td>
-                        <td>
-                          <button
-                            type="button"
-                            className="btn"
-                            disabled={!draft || savingId === athlete.id}
-                            onClick={() => handleSave(athlete)}
-                          >
-                            <Save size={14} />
-                            {savingId === athlete.id ? "保存中..." : "保存"}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {!loading && !isParentView && showRealtimeCalculator && (
-          <div className="card">
-            <div style={{ marginBottom: 12 }}>
-              <h2 style={{ margin: 0 }}>实时计算</h2>
-              <div className="meta">用于池边快速调整训练指标，不影响云端数据，除非你手动保存到列表。</div>
-            </div>
-
-            <div className="calc-grid">
-              <div>
-                <div className="calc-label">T-Value (25m Max)</div>
-                <input
-                  className="calc-input"
-                  type="number"
-                  step="0.1"
-                  value={calculatorTValue}
-                  onChange={(e) => setCalculatorTValue(Number(e.target.value) || 0)}
-                />
-              </div>
-              <div>
-                <div className="calc-label">CSS (100m Endurance)</div>
-                <input
-                  className="calc-input"
-                  type="number"
-                  step="0.1"
-                  value={calculatorCss}
-                  onChange={(e) => setCalculatorCss(Number(e.target.value) || 0)}
-                />
-              </div>
-              <div>
-                <div className="calc-label">PHV 阶段</div>
-                <select
-                  className="calc-input"
-                  value={calculatorPhv}
-                  onChange={(e) => setCalculatorPhv(e.target.value as PhvStage)}
-                >
-                  <option value="pre">pre</option>
-                  <option value="post">post</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="calc-result">
-              <div className="kpi"><div className="label">AABI</div><div className="value">{realtimeData.aabi.toFixed(2)}</div></div>
-              <div className="kpi"><div className="label">Gap Analysis</div><div className="value" style={{ fontSize: 20 }}>{realtimeData.gap}</div></div>
-              <div className="kpi"><div className="label">SP 25m</div><div className="value">{realtimeData.speed25.toFixed(1)}s</div></div>
-              <div className="kpi"><div className="label">ANP 50m</div><div className="value">{realtimeData.anaerobic50.toFixed(1)}s</div></div>
-              <div className="kpi"><div className="label">AES 100m</div><div className="value">{realtimeData.aerobic100.toFixed(1)}s</div></div>
-              <div className="kpi"><div className="label">AEN 200m</div><div className="value">{realtimeData.endurance200.toFixed(1)}s</div></div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="print-only">
-        <h1>M-CDS CLOUD ATHLETES REPORT</h1>
-        <p>导出时间：{new Date().toLocaleString()}</p>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left", borderBottom: "1px solid #333" }}>姓名</th>
-              <th style={{ borderBottom: "1px solid #333" }}>年龄</th>
-              <th style={{ borderBottom: "1px solid #333" }}>PHV</th>
-              <th style={{ borderBottom: "1px solid #333" }}>T</th>
-              <th style={{ borderBottom: "1px solid #333" }}>CSS</th>
-              <th style={{ borderBottom: "1px solid #333" }}>AABI</th>
-            </tr>
-          </thead>
-          <tbody>
-            {athletes.map((a) => {
-              const gap = getGap(a.t_value, a.css);
-              return (
-                <tr key={`p-${a.id}`}>
-                  <td style={{ padding: "4px 0" }}>{a.name}</td>
-                  <td style={{ textAlign: "center" }}>{formatMetric(a.age, 0)}</td>
-                  <td style={{ textAlign: "center" }}>{a.phv_stage ?? "--"}</td>
-                  <td style={{ textAlign: "center" }}>{formatMetric(a.t_value)}</td>
-                  <td style={{ textAlign: "center" }}>{formatMetric(a.css)}</td>
-                  <td style={{ textAlign: "center" }}>{gap.aabi > 0 ? gap.aabi.toFixed(2) : "--"}</td>
+          <div className="glass-card overflow-hidden">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>姓名</th>
+                  <th>年龄</th>
+                  <th>PHV</th>
+                  <th>T-Value</th>
+                  <th>CSS</th>
+                  <th>身高</th>
+                  <th>体重</th>
+                  <th>DPS</th>
+                  <th>潜力分析 (AABI)</th>
+                  <th>操作</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {athletes.map(athlete => {
+                  const draft = drafts[athlete.id] || {};
+                  const analysis = getGapAnalysis(draft.t_value || athlete.t_value, draft.css || athlete.css);
+                  return (
+                    <tr key={athlete.id} className="hover:bg-white/[0.02]">
+                      <td className="font-bold">{athlete.name}</td>
+                      <td><input className="input-dark" type="number" defaultValue={athlete.age} onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, age: parseInt(e.target.value)}})} /></td>
+                      <td>
+                        <select className="input-dark" style={{width: '80px'}} defaultValue={athlete.phv_stage} onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, phv_stage: e.target.value as any}})}>
+                          <option value="pre">Pre</option>
+                          <option value="post">Post</option>
+                        </select>
+                      </td>
+                      <td><input className="input-dark" type="number" step="0.1" defaultValue={athlete.t_value} onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, t_value: parseFloat(e.target.value)}})} /></td>
+                      <td><input className="input-dark" type="number" step="0.1" defaultValue={athlete.css} onChange={e => setDrafts({...drafts, [athlete.id]: {...draft, css: parseFloat(e.target.value)}})} /></td>
+                      <td><input className="input-dark" type="number" defaultValue={athlete.height} /></td>
+                      <td><input className="input-dark" type="number" defaultValue={athlete.weight} /></td>
+                      <td><input className="input-dark" type="number" step="0.01" defaultValue={athlete.dps} /></td>
+                      <td>
+                        <div className="flex flex-col gap-1">
+                          <span className="badge" style={{background: analysis.color + '22', color: analysis.color}}>{analysis.label}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">AABI: {analysis.aabi?.toFixed(2)}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="flex gap-2">
+                          <button onClick={() => saveAthlete(athlete.id)} className="p-2 hover:text-emerald-400" title="同步云端"><Save size={18}/></button>
+                          <button onClick={() => window.open(`?token=${athlete.share_token}`)} className="p-2 hover:text-blue-400" title="分享链接"><Share2 size={18}/></button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="p-6 max-w-lg mx-auto space-y-6">
+          <header className="flex items-center gap-3 border-b border-white/10 pb-4">
+             <ShieldCheck className="text-emerald-500" />
+             <h2 className="text-lg font-bold">运动员家长端看板</h2>
+          </header>
+          {currentAthlete ? (
+            <div className="space-y-4">
+              <div className="glass-card p-6 text-center">
+                <p className="text-slate-500 text-xs uppercase tracking-widest mb-1">运动员姓名</p>
+                <h3 className="text-3xl font-black text-white">{currentAthlete.name}</h3>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="glass-card p-4 text-center">
+                   <p className="text-[10px] text-slate-500 uppercase">T-Value</p>
+                   <p className="text-2xl font-bold text-emerald-400">{currentAthlete.t_value}s</p>
+                </div>
+                <div className="glass-card p-4 text-center">
+                   <p className="text-[10px] text-slate-500 uppercase">CSS</p>
+                   <p className="text-2xl font-bold text-blue-400">{currentAthlete.css}s</p>
+                </div>
+              </div>
+              {/* 这里可以继续复用你之前的黑色配速矩阵显示组件 */}
+              <div className="text-xs text-slate-500 text-center italic">
+                数据更新时间: {new Date().toLocaleDateString()}
+              </div>
+            </div>
+          ) : <p>加载中...</p>}
+        </div>
+      )}
     </div>
   );
 }
