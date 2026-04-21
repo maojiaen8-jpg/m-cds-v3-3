@@ -3,13 +3,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { 
   Printer, Save, Waves, Plus, Zap, Baby, 
-  Share2, Eye, X, Calculator, User, Lock, Users
+  Share2, Eye, X, Calculator, Lock, Users, Activity
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
 
-// --- 核心计算引擎 (保持 Golden Version 逻辑) ---
+// --- 核心计算引擎 (M-CDS V3.3) ---
 const calculateMCDS = (t: number, css: number, stage: string, age: number) => {
   const DISTANCES = [25, 50, 100, 200, 400];
   const getPace = (id: string) => {
@@ -36,21 +34,18 @@ const calculateMCDS = (t: number, css: number, stage: string, age: number) => {
 };
 
 export default function Page() {
-  const [role, setRole] = useState<"guest" | "coach" | "parent" | null>(null);
+  const [role, setRole] = useState<"guest" | "coach_login" | "coach" | "parent">("guest");
   const [pass, setPass] = useState("");
   const [athletes, setAthletes] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [activeAthlete, setActiveAthlete] = useState<any>(null);
   const [drafts, setDrafts] = useState<Record<string, any>>({});
 
-  // 1. 自动识别身份
   useEffect(() => {
     const token = new URLSearchParams(window.location.search).get("token");
     if (token) {
       setRole("parent");
       loadParentData(token);
-    } else {
-      setRole("guest"); // 默认显示选择入口
     }
   }, []);
 
@@ -64,11 +59,10 @@ export default function Page() {
   const loadParentData = async (token: string) => {
     const { data } = await supabase.from("athletes").select("*").eq("share_token", token).single();
     if (data) setActiveAthlete(data);
-    setLoading(false);
   };
 
   const handleCoachLogin = () => {
-    if (pass === "8888") { // 这里可以设置你的教练密码
+    if (pass === "8888") {
       setRole("coach");
       loadData();
     } else {
@@ -76,97 +70,174 @@ export default function Page() {
     }
   };
 
-  const saveAthlete = async (id: string) => {
-    const edit = drafts[id];
-    await supabase.from("athletes").update(edit).eq("id", id);
-    await loadData();
-    setDrafts({});
-    alert("同步成功");
-  };
-
-  const addAthlete = async () => {
-    const name = prompt("运动员姓名:");
-    if (!name) return;
-    await supabase.from("athletes").insert([{ name, age:14, t_value:15, css:80, phv_stage:'post', share_token: Math.random().toString(36).substring(7) }]);
-    loadData();
-  };
-
-  // --- UI 组件渲染 ---
-  if (role === "guest") return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-[#05070a] p-6 text-white font-sans">
-      <Waves size={60} color="#facc15" className="mb-6" />
-      <h1 className="text-3xl font-black italic mb-8 tracking-tighter">M-CDS ELITE V3.3</h1>
-      <div className="grid gap-4 w-full max-w-xs">
-        <div className="bg-white/5 p-6 rounded-3xl border border-white/10 text-center hover:bg-white/10 transition-all cursor-pointer" onClick={() => setRole("coach_login" as any)}>
-          <Users size={32} className="mx-auto mb-3 text-emerald-400" />
-          <h3 className="font-bold uppercase">教练入口</h3>
-          <p className="text-[10px] text-slate-500 mt-1">管理队员及导出计划</p>
-        </div>
-        <p className="text-[10px] text-slate-600 text-center px-4 mt-4">家长端请通过教练分享的专属链接进入</p>
-      </div>
-    </div>
-  );
-
-  if (role === ("coach_login" as any)) return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-[#05070a] p-6 text-white">
-      <div className="glass p-8 rounded-3xl w-full max-w-xs border border-white/10 text-center">
-        <Lock size={32} className="mx-auto mb-4 text-[#facc15]" />
-        <h2 className="mb-6 font-bold">请输入教练认证码</h2>
-        <input type="password" autoFocus className="w-full bg-black border border-white/20 rounded-xl p-4 text-center text-xl tracking-widest text-[#facc15]" value={pass} onChange={e=>setPass(e.target.value)} />
-        <button className="w-full bg-[#facc15] text-black font-black p-4 rounded-xl mt-4" onClick={handleCoachLogin}>进入系统</button>
-        <button className="mt-4 text-xs text-slate-500" onClick={() => setRole("guest")}>返回选择</button>
-      </div>
-    </div>
-  );
-
   return (
-    <div className="min-h-screen bg-[#05070a] text-white p-4 font-sans">
+    <div className="mcds-app">
       <style>{`
-        .glass { background: rgba(15, 20, 28, 0.9); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; }
-        .input-dark { background: #000; border: 1px solid #333; color: #facc15; padding: 6px; border-radius: 8px; width: 60px; text-align: center; font-weight: bold; }
-        .btn-gold { background: #facc15; color: #000; padding: 10px 20px; border-radius: 12px; font-weight: 900; border: none; cursor: pointer; }
-        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 100; padding: 20px; overflow-y: auto; }
-        .pace-val { color: #34d399; font-weight: bold; font-family: monospace; }
+        /* 全局样式重置 */
+        .mcds-app { 
+          background: radial-gradient(circle at top, #1a1c24, #05070a);
+          color: #e2e8f0; 
+          min-height: 100vh; 
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          padding: 20px;
+        }
+
+        /* 登录入口页面 */
+        .entry-card {
+          margin-top: 10vh;
+          width: 100%;
+          max-width: 360px;
+          background: rgba(255, 255, 255, 0.03);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 32px;
+          padding: 40px 30px;
+          text-align: center;
+          backdrop-filter: blur(10px);
+        }
+        .logo-anim { animation: pulse 2s infinite ease-in-out; }
+        @keyframes pulse { 0% { transform: scale(1); opacity: 0.8; } 50% { transform: scale(1.1); opacity: 1; } 100% { transform: scale(1); opacity: 0.8; } }
+        
+        .main-title { font-size: 28px; font-weight: 900; letter-spacing: -1px; margin: 20px 0 10px; font-style: italic; }
+        .sub-title { font-size: 12px; color: #718096; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 40px; }
+
+        .role-btn {
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          padding: 20px;
+          border-radius: 20px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          cursor: pointer;
+          transition: 0.3s;
+        }
+        .role-btn:hover { background: rgba(250, 204, 21, 0.1); border-color: #facc15; }
+        
+        .input-gold {
+          width: 100%;
+          background: #000;
+          border: 2px solid #2d3748;
+          border-radius: 16px;
+          padding: 15px;
+          color: #facc15;
+          text-align: center;
+          font-size: 24px;
+          font-weight: bold;
+          margin-bottom: 20px;
+          outline: none;
+        }
+        .input-gold:focus { border-color: #facc15; box-shadow: 0 0 15px rgba(250, 204, 21, 0.3); }
+
+        .btn-full {
+          width: 100%;
+          background: #facc15;
+          color: #000;
+          padding: 15px;
+          border-radius: 16px;
+          font-weight: 900;
+          border: none;
+          cursor: pointer;
+          font-size: 16px;
+        }
+
+        /* 管理面板样式 */
+        .dashboard { width: 100%; max-width: 1000px; }
+        .glass-table { 
+          background: rgba(15, 20, 28, 0.8); 
+          border: 1px solid rgba(255,255,255,0.05); 
+          border-radius: 24px; 
+          padding: 20px; 
+          overflow-x: auto; 
+        }
+        table { width: 100%; border-collapse: collapse; min-width: 600px; }
+        th { text-align: left; font-size: 10px; color: #4a5568; text-transform: uppercase; padding: 15px 10px; }
+        td { padding: 15px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .name-txt { font-weight: bold; font-size: 16px; }
+
+        /* 弹窗样式 */
+        .modal { 
+          position: fixed; inset: 0; background: rgba(0,0,0,0.95); 
+          z-index: 100; display: flex; align-items: center; justify-content: center; padding: 20px; 
+        }
+        .modal-content { 
+          width: 100%; max-width: 800px; background: #0a0c10; 
+          border: 1px solid #333; border-radius: 30px; padding: 30px; position: relative;
+        }
+        .pace-tag { color: #10b981; font-family: monospace; font-weight: bold; font-size: 18px; }
+        .range-tag { font-size: 10px; color: #4a5568; }
+
         @media print { .no-print { display: none !important; } }
       `}</style>
 
-      {/* 教练工作台 */}
-      {role === 'coach' && (
-        <div className="no-print">
-          <header className="flex justify-between items-center mb-6">
-            <div className="flex items-center gap-2">
-              <Waves color="#facc15" size={24} />
-              <h2 className="font-black italic tracking-tight">M-CDS <span className="text-[#facc15]">COACH</span></h2>
-            </div>
-            <button className="btn-gold" onClick={addAthlete}>+ 新增</button>
+      {/* 1. 初始选择入口 */}
+      {role === "guest" && (
+        <div className="entry-card">
+          <Waves size={64} color="#facc15" className="logo-anim" style={{margin:'0 auto'}} />
+          <h1 className="main-title">M-CDS <span style={{color:'#facc15'}}>ELITE</span></h1>
+          <p className="sub-title">Athlete Data System</p>
+          <div className="role-btn" onClick={() => setRole("coach_login")}>
+            <Users size={32} color="#10b981" style={{marginBottom: '10px'}} />
+            <span style={{fontWeight:'bold', fontSize:'18px'}}>教练端入口</span>
+            <span style={{fontSize:'10px', color:'#4a5568', marginTop:'5px'}}>管理队员及导出计划</span>
+          </div>
+          <p style={{fontSize:'10px', color:'#4a5568', marginTop:'30px'}}>家长端请点击教练分享的专属链接进入</p>
+        </div>
+      )}
+
+      {/* 2. 教练登录页 */}
+      {role === "coach_login" && (
+        <div className="entry-card">
+          <Lock size={48} color="#facc15" style={{margin:'0 auto 20px'}} />
+          <h2 style={{marginBottom: '30px'}}>请输入认证码</h2>
+          <input 
+            type="password" 
+            className="input-gold" 
+            placeholder="••••"
+            value={pass}
+            onChange={(e) => setPass(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleCoachLogin()}
+          />
+          <button className="btn-full" onClick={handleCoachLogin}>验证并进入</button>
+          <button style={{background:'none', border:'none', color:'#4a5568', marginTop:'20px', cursor:'pointer'}} onClick={() => setRole("guest")}>返回</button>
+        </div>
+      )}
+
+      {/* 3. 教练管理后台 */}
+      {role === "coach" && (
+        <div className="dashboard no-print">
+          <header style={{display:'flex', justifyContent:'space-between', alignItems:'center', width:'100%', marginBottom:'30px'}}>
+             <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+                <Waves color="#facc15" />
+                <span style={{fontWeight:900, fontSize:'20px'}}>COACH <span style={{color:'#facc15'}}>PANEL</span></span>
+             </div>
+             <button className="btn-full" style={{width:'auto', padding:'10px 20px'}} onClick={() => alert('点击姓名旁计算器查看')}>+ 新增运动员</button>
           </header>
 
-          <div className="glass p-4 overflow-x-auto">
-            <table className="w-full text-left">
+          <div className="glass-table">
+            <table>
               <thead>
-                <tr className="text-[10px] text-slate-500 uppercase border-b border-white/5">
-                  <th className="p-3">姓名</th>
-                  <th className="p-3 text-center">T-Val</th>
-                  <th className="p-3 text-center">CSS</th>
-                  <th className="p-3 text-right">操作</th>
+                <tr>
+                  <th>姓名</th><th>T-VALUE</th><th>CSS</th><th style={{textAlign:'right'}}>操作</th>
                 </tr>
               </thead>
               <tbody>
                 {athletes.map(a => (
-                  <tr key={a.id} className="border-b border-white/5">
-                    <td className="p-3 font-bold">{a.name}</td>
-                    <td className="p-3 text-center"><input className="input-dark" type="number" step="0.1" defaultValue={a.t_value} onChange={e=>setDrafts({...drafts, [a.id]:{...drafts[a.id], t_value:parseFloat(e.target.value)}})} /></td>
-                    <td className="p-3 text-center"><input className="input-dark" type="number" step="0.1" defaultValue={a.css} onChange={e=>setDrafts({...drafts, [a.id]:{...drafts[a.id], css:parseFloat(e.target.value)}})} /></td>
-                    <td className="p-3">
-                      <div className="flex justify-end gap-3">
-                        <button className="text-[#facc15] opacity-50" onClick={() => saveAthlete(a.id)} disabled={!drafts[a.id]}><Save size={18}/></button>
-                        <button className="text-white" onClick={() => setActiveAthlete(a)}><Calculator size={18}/></button>
-                        <button className="text-blue-400" onClick={() => {
-                          const url = `${window.location.origin}?token=${a.share_token}`;
-                          navigator.clipboard.writeText(url);
-                          alert("专属分享链接已复制到剪贴板！");
-                        }}><Share2 size={18}/></button>
-                      </div>
+                  <tr key={a.id}>
+                    <td className="name-txt">{a.name}</td>
+                    <td><span style={{color:'#facc15', fontWeight:'bold'}}>{a.t_value}s</span></td>
+                    <td><span style={{color:'#3b82f6', fontWeight:'bold'}}>{a.css}s</span></td>
+                    <td style={{textAlign:'right'}}>
+                       <div style={{display:'flex', justifyContent:'flex-end', gap:'15px'}}>
+                          <Calculator size={20} color="#e2e8f0" style={{cursor:'pointer'}} onClick={() => setActiveAthlete(a)} />
+                          <Share2 size={20} color="#3b82f6" style={{cursor:'pointer'}} onClick={() => {
+                            const url = `${window.location.origin}?token=${a.share_token}`;
+                            navigator.clipboard.writeText(url);
+                            alert("链接已复制，去发给家长吧！");
+                          }} />
+                       </div>
                     </td>
                   </tr>
                 ))}
@@ -176,49 +247,35 @@ export default function Page() {
         </div>
       )}
 
-      {/* 家长端或计算器弹窗 */}
-      {(activeAthlete || role === 'parent') && (
-        <div className={role === 'coach' ? "modal" : "p-2"}>
-          {role === 'coach' && <button className="absolute top-6 right-6 text-white" onClick={() => setActiveAthlete(null)}><X size={32}/></button>}
-          <div className="max-w-4xl mx-auto">
-             <div className="text-center mb-8">
-                <p className="text-[#facc15] text-[10px] font-black uppercase tracking-widest mb-1">M-CDS Elite Athlete</p>
-                <h1 className="text-4xl font-black uppercase tracking-tighter italic">{activeAthlete?.name}</h1>
-                <div className="flex justify-center gap-4 mt-4">
-                   <div className="glass px-4 py-2 text-center"><p className="text-[8px] text-slate-500 uppercase">T-Value</p><p className="text-xl font-bold text-emerald-400">{activeAthlete?.t_value}s</p></div>
-                   <div className="glass px-4 py-2 text-center"><p className="text-[8px] text-slate-500 uppercase">CSS</p><p className="text-xl font-bold text-blue-400">{activeAthlete?.css}s</p></div>
-                </div>
-             </div>
+      {/* 4. 家长端 & 计算器弹窗 */}
+      {(activeAthlete) && (
+        <div className={role === 'coach' ? "modal" : "dashboard"}>
+          <div className="modal-content">
+            {role === 'coach' && <X size={32} style={{position:'absolute', top:'20px', right:'20px', cursor:'pointer'}} onClick={() => setActiveAthlete(null)} />}
+            
+            <div style={{textAlign:'center', marginBottom:'40px'}}>
+              <Activity color="#facc15" size={40} style={{margin:'0 auto 10px'}} />
+              <h1 style={{fontSize:'36px', margin:0, fontWeight:900}}>{activeAthlete.name}</h1>
+              <p style={{color:'#4a5568', textTransform:'uppercase', fontSize:'10px', letterSpacing:'2px'}}>Performance Matrix V3.3</p>
+            </div>
 
-             <div className="glass overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse">
-                    <thead>
-                      <tr className="bg-white/5 text-[9px] text-slate-500 uppercase">
-                        <th className="p-4 text-left">Zone</th><th>25M</th><th>50M</th><th>100M</th><th>200M</th><th>400M</th><th>10S HR</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activeAthlete && calculateMCDS(activeAthlete.t_value, activeAthlete.css, activeAthlete.phv_stage, activeAthlete.age).map(r => (
-                        <tr key={r.zone} className="border-b border-white/5 text-center">
-                          <td className="p-4 text-left font-black text-sm">{r.zone}</td>
-                          {r.paces.map((p, i) => (
-                            <td key={i} className="p-2">
-                              <div className="pace-val text-sm">{p.val}</div>
-                              <div className="text-[8px] text-slate-600 tracking-tighter">{p.range}</div>
-                            </td>
-                          ))}
-                          <td className="text-rose-500 font-bold text-lg">{r.hr}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-             </div>
-             <button className="btn-gold w-full mt-6 no-print" onClick={() => window.print()}><Printer size={18} className="inline mr-2"/>打印今日训练单</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'15px', marginBottom:'30px'}}>
+               <div style={{background:'#111', padding:'20px', borderRadius:'20px', textAlign:'center', border:'1px solid #222'}}>
+                 <div style={{fontSize:'10px', color:'#4a5568', marginBottom:'5px'}}>T-VALUE</div>
+                 <div style={{fontSize:'24px', fontWeight:900, color:'#10b981'}}>{activeAthlete.t_value}s</div>
+               </div>
+               <div style={{background:'#111', padding:'20px', borderRadius:'20px', textAlign:'center', border:'1px solid #222'}}>
+                 <div style={{fontSize:'10px', color:'#4a5568', marginBottom:'5px'}}>CSS PACE</div>
+                 <div style={{fontSize:'24px', fontWeight:900, color:'#3b82f6'}}>{activeAthlete.css}s</div>
+               </div>
+            </div>
+
+            <div style={{overflowX:'auto', background:'#000', borderRadius:'20px', border:'1px solid #222'}}>
+              <table style={{width:'100%', minWidth:'500px'}}>
+                <thead>
+                  <tr style={{background:'#111'}}>
+                    <th style={{padding:'15px'}}>强度</th><th>25M</th><th>50M</th><th>100M</th><th>HR/10S</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {calculateMCDS
