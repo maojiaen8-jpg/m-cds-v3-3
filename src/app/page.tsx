@@ -102,6 +102,10 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
+  const [showRealtimeCalculator, setShowRealtimeCalculator] = useState(false);
+  const [calculatorTValue, setCalculatorTValue] = useState(15.2);
+  const [calculatorCss, setCalculatorCss] = useState(84.5);
+  const [calculatorPhv, setCalculatorPhv] = useState<PhvStage>("post");
 
   const token = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -243,6 +247,20 @@ export default function Page() {
     window.print();
   };
 
+  const realtimeData = useMemo(() => {
+    const t = Math.max(calculatorTValue, 0.1);
+    const css = Math.max(calculatorCss, 0.1);
+    const aabi = (css / 4) / t;
+    return {
+      aabi,
+      gap: getGap(t, css).label,
+      speed25: t,
+      anaerobic50: (t + 2.5) * 2,
+      aerobic100: calculatorPhv === "pre" ? css * 1.015 : t * 1.28 * 4,
+      endurance200: calculatorPhv === "pre" ? css * 2.11 : t * 1.38 * 8,
+    };
+  }, [calculatorCss, calculatorPhv, calculatorTValue]);
+
   return (
     <div className="mcds-container">
       <style>{`
@@ -266,6 +284,7 @@ export default function Page() {
         .gap-balance { background: rgba(245, 196, 81, 0.2); color: #f5c451; }
         .meta { color: #8f9db2; font-size: 12px; }
         .error { color: #ff8d8d; margin-bottom: 10px; }
+        .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .dashboard-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
         .kpi { border: 1px solid #3b3320; border-radius: 12px; background: #100f0a; padding: 12px; }
         .kpi .label { font-size: 11px; color: #ad9a65; text-transform: uppercase; }
@@ -274,9 +293,14 @@ export default function Page() {
         .trend-svg { width: 100%; height: 220px; display: block; background: linear-gradient(180deg, rgba(245,196,81,0.05), transparent); border-radius: 8px; }
         .trend-legend { margin-top: 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 4px; color: #7f8ca1; font-size: 10px; }
         .empty-line { color: #6f7f98; font-size: 13px; padding: 18px; text-align: center; }
+        .calc-grid { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
+        .calc-label { font-size: 11px; color: #ad9a65; margin-bottom: 4px; }
+        .calc-input { width: 100%; background: #070a0f; color: #f8d98f; border: 1px solid #2d3547; border-radius: 8px; padding: 8px; }
+        .calc-result { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 10px; }
         .print-only { display: none; }
         @media (max-width: 768px) {
           .dashboard-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+          .calc-grid, .calc-result { grid-template-columns: 1fr; }
           .metric-input { width: 64px; }
         }
         @media print {
@@ -294,10 +318,19 @@ export default function Page() {
             </h1>
           </div>
           {!isParentView && (
-            <button type="button" className="btn" onClick={exportGroupPdf}>
-              <Printer size={16} />
-              一键导出全组 PDF
-            </button>
+            <div className="toolbar">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setShowRealtimeCalculator((prev) => !prev)}
+              >
+                {showRealtimeCalculator ? "返回运动员列表" : "切换到实时计算"}
+              </button>
+              <button type="button" className="btn" onClick={exportGroupPdf}>
+                <Printer size={16} />
+                一键导出全组 PDF
+              </button>
+            </div>
           )}
         </header>
 
@@ -338,7 +371,7 @@ export default function Page() {
           </div>
         )}
 
-        {!loading && !isParentView && (
+        {!loading && !isParentView && !showRealtimeCalculator && (
           <div className="card">
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
               <div>
@@ -418,6 +451,58 @@ export default function Page() {
                   })}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {!loading && !isParentView && showRealtimeCalculator && (
+          <div className="card">
+            <div style={{ marginBottom: 12 }}>
+              <h2 style={{ margin: 0 }}>实时计算</h2>
+              <div className="meta">用于池边快速调整训练指标，不影响云端数据，除非你手动保存到列表。</div>
+            </div>
+
+            <div className="calc-grid">
+              <div>
+                <div className="calc-label">T-Value (25m Max)</div>
+                <input
+                  className="calc-input"
+                  type="number"
+                  step="0.1"
+                  value={calculatorTValue}
+                  onChange={(e) => setCalculatorTValue(Number(e.target.value) || 0)}
+                />
+              </div>
+              <div>
+                <div className="calc-label">CSS (100m Endurance)</div>
+                <input
+                  className="calc-input"
+                  type="number"
+                  step="0.1"
+                  value={calculatorCss}
+                  onChange={(e) => setCalculatorCss(Number(e.target.value) || 0)}
+                />
+              </div>
+              <div>
+                <div className="calc-label">PHV 阶段</div>
+                <select
+                  className="calc-input"
+                  value={calculatorPhv}
+                  onChange={(e) => setCalculatorPhv(e.target.value as PhvStage)}
+                >
+                  <option value="pre">pre</option>
+                  <option value="post">post</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="calc-result">
+              <div className="kpi"><div className="label">AABI</div><div className="value">{realtimeData.aabi.toFixed(2)}</div></div>
+              <div className="kpi"><div className="label">Gap Analysis</div><div className="value" style={{ fontSize: 20 }}>{realtimeData.gap}</div></div>
+              <div className="kpi"><div className="label">SP 25m</div><div className="value">{realtimeData.speed25.toFixed(1)}s</div></div>
+              <div className="kpi"><div className="label">ANP 50m</div><div className="value">{realtimeData.anaerobic50.toFixed(1)}s</div></div>
+              <div className="kpi"><div className="label">AES 100m</div><div className="value">{realtimeData.aerobic100.toFixed(1)}s</div></div>
+              <div className="kpi"><div className="label">AEN 200m</div><div className="value">{realtimeData.endurance200.toFixed(1)}s</div></div>
             </div>
           </div>
         )}
