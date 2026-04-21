@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { 
-  Printer, Save, Waves, Plus, TrendingUp, Zap, Baby, 
+  Printer, Save, Waves, Plus, Zap, Baby, 
   Share2, Eye, X, Calculator, User
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -53,6 +53,7 @@ export default function Page() {
   const [activeAthlete, setActiveAthlete] = useState<Athlete | null>(null);
   const [showStandaloneCalc, setShowStandaloneCalc] = useState(false);
 
+  // --- 加载数据 ---
   const loadData = async () => {
     setLoading(true);
     const { data, error } = await supabase.from("athletes").select("*").order("name");
@@ -61,8 +62,11 @@ export default function Page() {
     setLoading(false);
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    loadData();
+  }, []);
 
+  // --- 潜力分析 ---
   const getGapAnalysis = (t: number, css: number) => {
     if (!t || !css) return { label: "--", color: "#4a5568", aabi: 0 };
     const aabi = (css / 4) / t;
@@ -71,12 +75,13 @@ export default function Page() {
     return { label: "平衡", color: "#34d399", aabi };
   };
 
+  // --- 保存数据 ---
   const saveAthlete = async (id: string) => {
     const edit = drafts[id];
     if (!edit) return;
     const { error } = await supabase.from("athletes").update(edit).eq("id", id);
     if (!error) {
-      await supabase.from("measurements").insert({ athlete_id: id, ...edit, recorded_at: new Date() });
+      await supabase.from("measurements").insert({ athlete_id: id, ...edit });
       await loadData();
       const newDrafts = { ...drafts };
       delete newDrafts[id];
@@ -85,6 +90,7 @@ export default function Page() {
     }
   };
 
+  // --- 新增运动员 ---
   const addAthlete = async () => {
     const name = prompt("请输入新运动员姓名:");
     if (!name) return;
@@ -96,6 +102,7 @@ export default function Page() {
     else loadData();
   };
 
+  // --- 渲染页面 ---
   return (
     <div className="app-container">
       <style>{`
@@ -113,79 +120,83 @@ export default function Page() {
         .modal-content { width: 100%; max-width: 900px; max-height: 90vh; overflow-y: auto; position: relative; }
         .matrix-grid { width: 100%; overflow-x: auto; border-radius: 12px; background: #000; }
         .matrix-table { width: 100%; border-collapse: collapse; min-width: 600px; }
+        .matrix-table th { padding: 12px; font-size: 10px; color: #444; }
         .matrix-table td { padding: 15px 10px; text-align: center; border-bottom: 1px solid #111; }
         .pace-box { font-family: monospace; font-size: 14px; color: #34d399; font-weight: bold; }
         .range-box { font-size: 9px; color: #4a5568; }
+        @media print { .no-print { display: none; } .print-only { display: block; } }
       `}</style>
 
-      {/* 顶部导航 */}
-      <nav className="top-nav">
-        <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
-          <Waves color="#facc15" size={32} />
-          <div>
-            <h1 style={{margin: 0, fontSize: '22px', fontWeight: 900}}>M-CDS <span style={{color:'#facc15'}}>ELITE</span></h1>
-            <span style={{fontSize: '10px', color: '#4a5568'}}>CLOUD MANAGEMENT V3.3</span>
+      <div className="no-print">
+        {/* 顶部导航 */}
+        <nav className="top-nav">
+          <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
+            <Waves color="#facc15" size={32} />
+            <div>
+              <h1 style={{margin: 0, fontSize: '22px', fontWeight: 900}}>M-CDS <span style={{color:'#facc15'}}>ELITE</span></h1>
+              <span style={{fontSize: '10px', color: '#4a5568'}}>CLOUD MANAGEMENT V3.3</span>
+            </div>
           </div>
-        </div>
-        <div style={{display: 'flex', gap: '10px'}}>
-          <button className="btn btn-outline" onClick={() => setShowStandaloneCalc(true)}><Calculator size={18}/> 实时计算</button>
-          <button className="btn btn-gold" onClick={addAthlete}><Plus size={18}/> 新增运动员</button>
-        </div>
-      </nav>
+          <div style={{display: 'flex', gap: '10px'}}>
+            <button className="btn btn-outline" onClick={() => setShowStandaloneCalc(true)}><Calculator size={18}/> 实时计算</button>
+            <button className="btn btn-gold" onClick={addAthlete}><Plus size={18}/> 新增运动员</button>
+          </div>
+        </nav>
 
-      {/* 管理员大表格 */}
-      <main className="glass">
-        <div style={{overflowX: 'auto'}}>
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>姓名</th>
-                <th>年龄</th>
-                <th>T-Value</th>
-                <th>CSS</th>
-                <th>潜力分析</th>
-                <th>查看计算器</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {athletes.map(a => {
-                const draft = drafts[a.id] || {};
-                const t = draft.t_value ?? a.t_value;
-                const c = draft.css ?? a.css;
-                const analysis = getGapAnalysis(t, c);
-                return (
-                  <tr key={a.id}>
-                    <td style={{fontWeight: 'bold'}}>{a.name}</td>
-                    <td><input className="input-mini" type="number" defaultValue={a.age} onChange={e=>setDrafts({...drafts, [a.id]: {...draft, age: parseInt(e.target.value)}})} /></td>
-                    <td><input className="input-mini" type="number" step="0.1" defaultValue={a.t_value} onChange={e=>setDrafts({...drafts, [a.id]: {...draft, t_value: parseFloat(e.target.value)}})} /></td>
-                    <td><input className="input-mini" type="number" step="0.1" defaultValue={a.css} onChange={e=>setDrafts({...drafts, [a.id]: {...draft, css: parseFloat(e.target.value)}})} /></td>
-                    <td>
-                      <span style={{color: analysis.color, fontSize: '11px', fontWeight: 'bold'}}>{analysis.label} ({analysis.aabi?.toFixed(2)})</span>
-                    </td>
-                    <td>
-                      <button className="btn-outline" style={{padding: '5px 10px'}} onClick={() => setActiveAthlete(a)}><Eye size={16}/></button>
-                    </td>
-                    <td>
-                      <div style={{display: 'flex', gap: '8px'}}>
-                        <button className="btn-outline" onClick={() => saveAthlete(a.id)} disabled={!drafts[a.id]}><Save size={16} color={drafts[a.id] ? "#facc15" : "#333"}/></button>
-                        <button className="btn-outline" onClick={() => window.open(`?token=${a.share_token}`)}><Share2 size={16}/></button>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </main>
+        {/* 管理员大表格 */}
+        <main className="glass">
+          <div style={{overflowX: 'auto'}}>
+            <table className="admin-table">
+              <thead>
+                <tr>
+                  <th>姓名</th>
+                  <th>年龄</th>
+                  <th>T-Value</th>
+                  <th>CSS</th>
+                  <th>潜力分析</th>
+                  <th>计算器</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {athletes.map(a => {
+                  const draft = drafts[a.id] || {};
+                  const t = draft.t_value ?? a.t_value;
+                  const c = draft.css ?? a.css;
+                  const analysis = getGapAnalysis(t, c);
+                  return (
+                    <tr key={a.id}>
+                      <td style={{fontWeight: 'bold'}}>{a.name}</td>
+                      <td><input className="input-mini" type="number" defaultValue={a.age} onChange={e=>setDrafts({...drafts, [a.id]: {...draft, age: parseInt(e.target.value)}})} /></td>
+                      <td><input className="input-mini" type="number" step="0.1" defaultValue={a.t_value} onChange={e=>setDrafts({...drafts, [a.id]: {...draft, t_value: parseFloat(e.target.value)}})} /></td>
+                      <td><input className="input-mini" type="number" step="0.1" defaultValue={a.css} onChange={e=>setDrafts({...drafts, [a.id]: {...draft, css: parseFloat(e.target.value)}})} /></td>
+                      <td>
+                        <span style={{color: analysis.color, fontSize: '11px', fontWeight: 'bold'}}>{analysis.label} ({analysis.aabi?.toFixed(2)})</span>
+                      </td>
+                      <td>
+                        <button className="btn-outline" style={{padding: '5px 10px'}} onClick={() => setActiveAthlete(a)}><Eye size={16}/></button>
+                      </td>
+                      <td>
+                        <div style={{display: 'flex', gap: '8px'}}>
+                          <button className="btn-outline" onClick={() => saveAthlete(a.id)} disabled={!drafts[a.id]}><Save size={16} color={drafts[a.id] ? "#facc15" : "#333"}/></button>
+                          <button className="btn-outline" onClick={() => window.open(`?token=${a.share_token}`)}><Share2 size={16}/></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </main>
+      </div>
 
-      {/* 弹窗：单人黑色科技计算器 (基于 Golden Version) */}
+      {/* 弹窗：运动员计算面板 */}
       {activeAthlete && (
         <div className="modal-overlay">
           <div className="modal-content glass">
-            <button style={{position: 'absolute', top: 20, right: 20, background: 'none', border: 'none', color: '#fff'}} onClick={() => setActiveAthlete(null)}><X size={24}/></button>
-            <h2 style={{marginTop: 0}}><User size={20} inline /> {activeAthlete.name} 的训练指标</h2>
+            <button style={{position: 'absolute', top: 20, right: 20, background: 'none', border: 'none', color: '#fff', cursor: 'pointer'}} onClick={() => setActiveAthlete(null)}><X size={24}/></button>
+            <h2 style={{marginTop: 0, display: 'flex', alignItems: 'center', gap: '10px'}}><User size={24}/> {activeAthlete.name} 训练矩阵</h2>
             <div className="matrix-grid">
               <table className="matrix-table">
                 <thead>
@@ -209,18 +220,12 @@ export default function Page() {
                 </tbody>
               </table>
             </div>
-            <button className="btn btn-gold" style={{marginTop: '20px', width: '100%', justifyContent: 'center'}} onClick={() => window.print()}><Printer size={18}/> 打印此报告</button>
+            <button className="btn btn-gold" style={{marginTop: '20px', width: '100%', justifyContent: 'center'}} onClick={() => window.print()}><Printer size={18}/> 打印</button>
           </div>
         </div>
       )}
 
-      {/* 独立实时计算器 (不存数据库) */}
-      {showStandaloneCalc && (
-        <div className="modal-overlay">
-          <div className="modal-content glass" style={{maxWidth: '500px'}}>
-             <button style={{position: 'absolute', top: 20, right: 20, background: 'none', border: 'none', color: '#fff'}} onClick={() => setShowStandaloneCalc(false)}><X size={24}/></button>
-             <h2>临时配速计算</h2>
-             <div style={{display: 'grid', gap: '15px'}}>
-                <div><label className="range-box">T-Value (25m)</label><input className="input-mini" style={{width: '100%'}} type="number" step="0.1" defaultValue="15.0" id="tempT" /></div>
-                <div><label className="range-box">CSS (100m)</label><input className="input-mini" style={{width: '100%'}} type="number" step="0.1" defaultValue="80.0" id="tempC" /></div>
-                <p style={{fo
+      {loading && <div style={{position: 'fixed', top: 20, right: 20, color: '#facc15', fontSize: '12px'}}>同步中...</div>}
+    </div>
+  );
+}
