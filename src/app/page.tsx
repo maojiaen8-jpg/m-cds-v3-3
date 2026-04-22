@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
-// --- 1. 时间格式化 (解决 1:60.0 问题) ---
+// --- 1. 时间格式化 (解决 1:60.0 进位逻辑) ---
 const formatPace = (s: number) => {
   if (s >= 3600) return "59:59"; 
   let totalMs = Math.round(s * 10) / 10;
@@ -33,13 +33,13 @@ const STROKE_FACTORS: Record<string, {name:string, factor:number}> = {
   'Breast': {name:'蛙泳', factor:1.18} 
 };
 
-// --- 3. 核心计算引擎 ---
+// --- 3. 核心计算引擎 (M-CDS V3.3) ---
 const calculateMCDS = (athlete: any) => {
   if (!athlete) return [];
   const { t_value: t, css, phv_stage: stage, age, stroke: strokeKey, pool_type: pool } = athlete;
-  const sFactor = STROKE_FACTORS[strokeKey || 'Free'].factor;
+  const sFactor = STROKE_FACTORS[strokeKey || 'Free']?.factor || 1.0;
   const pFactor = pool === '50' ? 1.035 : 1.0;
-  const maxHR = 220 - age;
+  const maxHR = 220 - (age || 14);
   const DISTANCES = [25, 50, 100, 200, 400];
 
   return ['SP', 'TSP', 'ANP', 'ANE', 'AES', 'AEN', 'BAE'].map(zone => {
@@ -63,7 +63,7 @@ const calculateMCDS = (athlete: any) => {
         if (zone === 'ANE' && (strokeKey === 'Free' || strokeKey === 'Back') && d <= 100) isNA = false;
         if ((strokeKey === 'Fly' || strokeKey === 'Breast') && d > 200) isNA = true;
         if (isNA) return { val: 'N/A', range: '--' };
-        const decay = DECAY_FACTORS[strokeKey || 'Free'][d] || 1.0;
+        const decay = DECAY_FACTORS[strokeKey || 'Free']?.[d] || 1.0;
         const seconds = b25 * (d / 25) * decay;
         return { val: formatPace(seconds), range: `${formatPace(seconds * 0.98)}~${formatPace(seconds * 1.02)}` };
       }),
@@ -79,6 +79,7 @@ export default function Page() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, any>>({});
 
   useEffect(() => {
     const init = async () => {
@@ -108,16 +109,15 @@ export default function Page() {
   };
 
   const deleteAthlete = async (id: string, name: string) => {
-    if (window.confirm(`确定要彻底删除运动员 [${name}] 吗？此操作不可撤销。`)) {
-      const { error } = await supabase.from("athletes").delete().eq("id", id);
-      if (error) alert("删除失败: " + error.message);
-      else loadData();
+    if (window.confirm(`确认删除运动员 [${name}] 吗？`)) {
+      await supabase.from("athletes").delete().eq("id", id);
+      loadData();
     }
   };
 
   const handleLogin = async () => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) alert("密码错误"); else window.location.reload();
+    if (error) alert("登录失败"); else window.location.reload();
   };
 
   return (
@@ -128,14 +128,14 @@ export default function Page() {
         .input-dark { width: 100%; background: #000; border: 1px solid #333; color: #fff; padding: 12px; border-radius: 12px; margin-bottom: 10px; outline: none; box-sizing: border-box; }
         .btn-gold { width: 100%; background: #facc15; color: #000; padding: 15px; border-radius: 12px; font-weight: 900; border: none; cursor: pointer; }
         .glass-box { width: 100%; max-width: 1100px; background: rgba(15, 20, 28, 0.8); border: 1px solid rgba(255,255,255,0.05); border-radius: 24px; padding: 15px; overflow-x: auto; }
-        .admin-table { width: 100%; border-collapse: collapse; min-width: 850px; }
+        .admin-table { width: 100%; border-collapse: collapse; min-width: 950px; }
         .admin-table th { color: #4a5568; font-size: 10px; padding: 12px 10px; text-align: left; text-transform: uppercase; border-bottom: 1px solid #1a202c; }
         .admin-table td { border-bottom: 1px solid rgba(255,255,255,0.03); padding: 12px 10px; }
-        .in-gold { background: #000; border: 1px solid #333; color: #facc15; padding: 8px; border-radius: 8px; width: 60px; text-align: center; font-weight: bold; }
-        .sel-dark { background: #000; border: 1px solid #333; color: #e2e8f0; padding: 8px; border-radius: 8px; font-size: 12px; }
+        .in-gold { background: #000; border: 1px solid #333; color: #facc15; padding: 8px; border-radius: 8px; width: 55px; text-align: center; font-weight: bold; }
+        .sel-dark { background: #000; border: 1px solid #333; color: #e2e8f0; padding: 8px; border-radius: 8px; font-size: 11px; }
         .pace-tag { color: #10b981; font-family: monospace; font-weight: bold; font-size: 15px; }
         .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 100; overflow-y: auto; padding: 10px; display: flex; justify-content: center; }
-        .modal-content { background: #0a0c10; border: 1px solid #333; border-radius: 30px; padding: 25px; width: 100%; max-width: 850px; height: fit-content; }
+        .modal-content { background: #0a0c10; border: 1px solid #333; border-radius: 30px; padding: 25px; width: 100%; max-width: 850px; height: fit-content; position: relative; }
         @media print { .no-print { display: none !important; } }
       `}</style>
 
@@ -152,28 +152,29 @@ export default function Page() {
           <Lock size={40} color="#facc15" style={{margin:'0 auto 20px'}} />
           <input type="email" placeholder="邮箱" className="input-dark" value={email} onChange={e=>setEmail(e.target.value)} />
           <input type="password" placeholder="密码" className="input-dark" value={password} onChange={e=>setPassword(e.target.value)} />
-          <button className="btn-gold" onClick={handleLogin}>进入系统</button>
+          <button className="btn-gold" onClick={handleLogin}>验证并登录</button>
         </div>
       )}
 
       {role === "coach" && (
         <div className="glass-box no-print">
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20}}>
-            <h3 style={{margin:0}}>队员管理系统</h3>
+            <h3 style={{margin:0}}>队员数据管理</h3>
             <button className="btn-gold" style={{width:'auto', padding:'8px 15px'}} onClick={async () => {
-              const n = prompt("运动员姓名:");
+              const n = prompt("姓名:");
               if(n) await supabase.from("athletes").insert([{name:n, t_value:15, css:80, age:14, stroke:'Free', phv_stage:'post', share_token:Math.random().toString(36).substring(7)}]);
               loadData();
-            }}>+ 新增</button>
+            }}>+ 新增运动员</button>
           </div>
           <table className="admin-table">
             <thead>
-              <tr><th>姓名</th><th>PHV分期</th><th>专项泳姿</th><th>T-VAL</th><th>CSS</th><th style={{textAlign:'right'}}>操作</th></tr>
+              <tr><th>姓名</th><th>年龄</th><th>PHV分期</th><th>专项泳姿</th><th>T-VAL</th><th>CSS</th><th style={{textAlign:'right'}}>操作</th></tr>
             </thead>
             <tbody>
               {athletes.map(a => (
                 <tr key={a.id}>
                   <td style={{fontWeight:'bold', fontSize:16}}>{a.name}</td>
+                  <td><input className="in-gold" type="number" defaultValue={a.age} onBlur={e=>updateAthlete(a.id, {age:parseInt(e.target.value)})} /></td>
                   <td>
                     <select className="sel-dark" defaultValue={a.phv_stage} onChange={e=>updateAthlete(a.id, {phv_stage:e.target.value})}>
                       <option value="pre">发育前期(Pre)</option><option value="post">发育后期(Post)</option>
@@ -187,32 +188,32 @@ export default function Page() {
                   <td><input className="in-gold" defaultValue={a.t_value} onBlur={e=>updateAthlete(a.id, {t_value:parseFloat(e.target.value)})} /></td>
                   <td><input className="in-gold" style={{color:'#3b82f6'}} defaultValue={a.css} onBlur={e=>updateAthlete(a.id, {css:parseFloat(e.target.value)})} /></td>
                   <td style={{textAlign:'right'}}>
-                    <div style={{display:'flex', justifyContent:'flex-end', gap:'15px'}}>
-                      <Eye size={22} style={{cursor:'pointer'}} onClick={()=>setActiveAthlete(a)} title="查看计算器" />
-                      <Share2 size={22} color="#3b82f6" style={{cursor:'pointer'}} onClick={()=>{navigator.clipboard.writeText(`${window.location.origin}?token=${a.share_token}`);alert("链接已复制");}} title="分享" />
-                      <Trash2 size={22} color="#f87171" style={{cursor:'pointer'}} onClick={()=>deleteAthlete(a.id, a.name)} title="彻底删除" />
+                    <div style={{display:'flex', justifyContent:'flex-end', gap:'12px'}}>
+                      <Eye size={22} style={{cursor:'pointer'}} onClick={()=>setActiveAthlete(a)} />
+                      <Share2 size={22} color="#3b82f6" style={{cursor:'pointer'}} onClick={()=>{navigator.clipboard.writeText(`${window.location.origin}?token=${a.share_token}`);alert("链接已复制");}} />
+                      <Trash2 size={22} color="#f87171" style={{cursor:'pointer'}} onClick={()=>deleteAthlete(a.id, a.name)} />
                     </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <button onClick={()=>{supabase.auth.signOut(); window.location.reload();}} style={{background:'none', border:'none', color:'#4a5568', marginTop:30, cursor:'pointer'}}>退出登录</button>
+          <button onClick={()=>{supabase.auth.signOut(); window.location.reload();}} style={{background:'none', border:'none', color:'#4a5568', marginTop:30, cursor:'pointer', fontSize:12}}>退出系统</button>
         </div>
       )}
 
       {activeAthlete && (
         <div className={role === 'coach' ? "modal" : "glass-box"}>
           <div className="modal-content">
-            {role === 'coach' && <div style={{textAlign:'right'}}><X size={32} style={{cursor:'pointer'}} onClick={()=>setActiveAthlete(null)} /></div>}
+            {role === 'coach' && <X size={32} style={{position:'absolute', top:20, right:20, cursor:'pointer'}} onClick={()=>setActiveAthlete(null)} />}
             <div style={{textAlign:'center', marginBottom:25}}>
               <h1 style={{margin:0, fontSize:32}}>{activeAthlete.name}</h1>
               <p style={{fontSize:14, color:'#facc15', marginTop:10}} suppressHydrationWarning>
-                {STROKE_FACTORS[activeAthlete.stroke || 'Free'].name} | {activeAthlete.phv_stage === 'pre' ? '发育前期' : '发育后期'} | {new Date().toLocaleDateString()}
+                {activeAthlete.age}岁 | {STROKE_FACTORS[activeAthlete.stroke || 'Free'].name} | {activeAthlete.phv_stage === 'pre' ? '发育前期' : '发育后期'} | {new Date().toLocaleDateString()}
               </p>
             </div>
             <div style={{overflowX:'auto', background:'#000', borderRadius:'20px', padding:'10px', border:'1px solid #222'}}>
-              <table style={{width:'100%', minWidth:'600px', borderCollapse:'collapse'}}>
+              <table style={{width:'100%', minWidth:'650px', borderCollapse:'collapse'}}>
                 <thead>
                   <tr style={{color:'#718096', fontSize:10, textTransform:'uppercase'}}>
                     <th style={{padding:12, textAlign:'left'}}>Zone</th><th>25M</th><th>50M</th><th>100M</th><th>200M</th><th>400M</th><th>HR</th>
@@ -238,7 +239,7 @@ export default function Page() {
                 </tbody>
               </table>
             </div>
-            <button className="btn-gold no-print" style={{marginTop:30}} onClick={()=>window.print()}>打印今日课表</button>
+            <button className="btn-gold no-print" style={{marginTop:30}} onClick={()=>window.print()}>打印今日训练单</button>
           </div>
         </div>
       )}
