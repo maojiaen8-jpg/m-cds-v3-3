@@ -13,6 +13,22 @@ const formatPace = (s: number) => {
   return `${m}:${r.toFixed(1).padStart(4, '0')}`;
 };
 
+const STROKES = ["Free", "Back", "Fly", "Breast"] as const;
+
+const normalizeAthlete = (a: any) => {
+  const baseT = Number(a?.t_value ?? 15);
+  const baseCss = Number(a?.css ?? 80);
+  const existing = a?.strokeData ?? {};
+  const strokeData = {
+    Free: { t: Number(existing?.Free?.t ?? baseT), css: Number(existing?.Free?.css ?? baseCss) },
+    Back: { t: Number(existing?.Back?.t ?? baseT), css: Number(existing?.Back?.css ?? baseCss) },
+    Fly: { t: Number(existing?.Fly?.t ?? baseT), css: Number(existing?.Fly?.css ?? baseCss) },
+    Breast: { t: Number(existing?.Breast?.t ?? baseT), css: Number(existing?.Breast?.css ?? baseCss) },
+  };
+  const currentStroke = STROKES.includes(a?.currentStroke) ? a.currentStroke : (a?.stroke || "Free");
+  return { ...a, strokeData, currentStroke };
+};
+
 // --- 2. 核心计算引擎 (M-CDS V3.3 严格协议版) ---
 const calculateMCDS = (a: any, activeStroke: string) => {
   if (!a) return [];
@@ -31,6 +47,9 @@ const calculateMCDS = (a: any, activeStroke: string) => {
 
   const poolF = a.pool_type === '50' ? 1.035 : 1.0;
   const strokeF = SF[activeStroke] || 1.0;
+  const activeMetrics = a?.strokeData?.[a?.currentStroke] || a?.strokeData?.[activeStroke] || {};
+  const tValue = Number(activeMetrics?.t ?? a?.t_value ?? 15);
+  const cssValue = Number(activeMetrics?.css ?? a?.css ?? 80);
 
   return Object.keys(Z).map(z => {
     const cfg = Z[z];
@@ -38,19 +57,19 @@ const calculateMCDS = (a: any, activeStroke: string) => {
 
     if (['SP', 'TSP', 'ANP', 'ANE'].includes(z)) {
       // 无氧类逻辑：T-Value 驱动
-      const tBase = z === 'SP' ? a.t_value : z === 'TSP' ? a.t_value + 0.8 : z === 'ANP' ? a.t_value + 2.5 : a.t_value * 1.18;
+      const tBase = z === 'SP' ? tValue : z === 'TSP' ? tValue + 0.8 : z === 'ANP' ? tValue + 2.5 : tValue * 1.18;
       b25 = tBase * strokeF * poolF;
     } else {
       // 有氧类逻辑
       if (a.phv_stage === 'pre') {
         // Pre-PHV：CSS 驱动 + 泳姿修正
-        const css25 = a.css / 4;
+        const css25 = cssValue / 4;
         const cssFactor = z === 'AES' ? 1.015 : z === 'AEN' ? 1.055 : 1.18;
         b25 = css25 * cssFactor * poolF * strokeF; 
       } else {
         // Post-PHV：T-Value 转化
         const tFactor = z === 'AES' ? 1.28 : z === 'AEN' ? 1.38 : 1.55;
-        b25 = a.t_value * tFactor * strokeF * poolF;
+        b25 = tValue * tFactor * strokeF * poolF;
       }
     }
 
@@ -93,7 +112,13 @@ export default function Page() {
       const t = new URLSearchParams(window.location.search).get("token");
       if (t) {
         const { data: a } = await supabase.from("athletes").select("*").eq("share_token", t).single();
-        if (a) { setRole("parent"); setActiveA(a); setViewStroke(a.stroke || "Free"); loadS(a.coach_id); }
+        if (a) {
+          const normalized = normalizeAthlete(a);
+          setRole("parent");
+          setActiveA(normalized);
+          setViewStroke(normalized.currentStroke || "Free");
+          loadS(a.coach_id);
+        }
       } else {
         const { data: { session: s } } = await supabase.auth.getSession();
         if (s) { setUser(s.user); setRole("coach"); loadD(); loadS(s.user.id); }
@@ -102,9 +127,20 @@ export default function Page() {
   }, []);
 
   const [user, setUser] = useState<any>(null);
-  const loadD = async () => { const { data } = await supabase.from("athletes").select("*").order("age", { ascending: false }); if (data) setAthletes(data); };
+  const loadD = async () => {
+    const { data } = await supabase.from("athletes").select("*").order("age", { ascending: false });
+    if (data) setAthletes((data as any[]).map(normalizeAthlete));
+  };
   const loadS = async (id: string) => { const { data } = await supabase.from("schedules").select("*").eq("coach_id", id); if (data) setDbSched(data); };
-  const handleUpdateA = async (id: string, up: any) => { await supabase.from("athletes").update(up).eq("id", id); loadD(); };
+  const handleUpdateA = async (id: string, up: any) => {
+    await supabase.from("athletes").update(up).eq("id", id);
+    await loadD();
+    if (activeA?.id === id) {
+      const next = normalizeAthlete({ ...activeA, ...up });
+      setActiveA(next);
+      setViewStroke(next.currentStroke || "Free");
+    }
+  };
 
   return (
     <div className="app-container">
@@ -134,7 +170,7 @@ export default function Page() {
         <div className="glass no-print">
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:15}}>
             <h3 style={{margin:0}}>全队管理 (年龄倒序)</h3>
-            <div style={{display:'flex', gap:8}}><button className="btn-gold" style={{background:'#3b82f6', color:'#fff'}} onClick={()=>setShowCal(!showCal)}><Calendar size={18}/></button><button className="btn-gold" onClick={async ()=>{const n=prompt("姓名:"); if(n) await supabase.from("athletes").insert([{name:n, age:14, t_value:15, css:80, stroke:'Free', phv_stage:'post', pool_type:'25', share_token:Math.random().toString(36).substring(2), coach_id:user.id}]); loadD();}}>+ 新增</button></div>
+            <div style={{display:'flex', gap:8}}><button className="btn-gold" style={{background:'#3b82f6', color:'#fff'}} onClick={()=>setShowCal(!showCal)}><Calendar size={18}/></button><button className="btn-gold" onClick={async ()=>{const n=prompt("姓名:"); if(n) await supabase.from("athletes").insert([{name:n, age:14, t_value:15, css:80, stroke:'Free', currentStroke:'Free', strokeData:{Free:{t:15,css:80},Back:{t:15,css:80},Fly:{t:15,css:80},Breast:{t:15,css:80}}, phv_stage:'post', pool_type:'25', share_token:Math.random().toString(36).substring(2), coach_id:user.id}]); loadD();}}>+ 新增</button></div>
           </div>
 
           {showCal && <div style={{padding:15, background:'#000', borderRadius:15, border:'1px solid #facc15', marginBottom:20}}>
@@ -160,15 +196,15 @@ export default function Page() {
           </div>}
 
           <table style={{width:'100%', borderCollapse:'collapse', minWidth:850}}>
-            <thead><tr style={{color:'#4a5568', fontSize:10, textAlign:'left'}}><th>姓名</th><th>年龄</th><th>PHV</th><th>泳姿</th><th>池长</th><th>T-VAL</th><th>CSS</th><th style={{textAlign:'right'}}>操作</th></tr></thead>
+            <thead><tr style={{color:'#4a5568', fontSize:10, textAlign:'left'}}><th>姓名</th><th>年龄</th><th>PHV</th><th>查看泳姿</th><th>池长</th><th>T-VAL</th><th>CSS</th><th style={{textAlign:'right'}}>操作</th></tr></thead>
             <tbody>{athletes.map(a=>(<tr key={a.id} style={{borderBottom:'1px solid #111'}}><td style={{fontWeight:'bold'}}>{a.name}</td>
               <td><input className="in-gold" type="number" defaultValue={a.age} onBlur={e=>handleUpdateA(a.id,{age:parseInt(e.target.value)})} /></td>
               <td><select className="sel-dark" defaultValue={a.phv_stage} onChange={e=>handleUpdateA(a.id,{phv_stage:e.target.value})}><option value="pre">Pre</option><option value="post">Post</option></select></td>
-              <td><select className="sel-dark" style={{width:55}} defaultValue={a.stroke} onChange={e=>handleUpdateA(a.id,{stroke:e.target.value})}><option value="Free">自</option><option value="Back">仰</option><option value="Fly">蝶</option><option value="Breast">蛙</option></select></td>
+              <td><select className="sel-dark" style={{width:70}} value={a.currentStroke || "Free"} onChange={e=>handleUpdateA(a.id,{currentStroke:e.target.value})}><option value="Free">自由</option><option value="Back">仰泳</option><option value="Fly">蝶泳</option><option value="Breast">蛙泳</option></select></td>
               <td><select className="sel-dark" defaultValue={a.pool_type} onChange={e=>handleUpdateA(a.id,{pool_type:e.target.value})}><option value="25">25</option><option value="50">50</option></select></td>
-              <td><input className="in-gold" defaultValue={a.t_value} onBlur={e=>handleUpdateA(a.id,{t_value:parseFloat(e.target.value)})} /></td>
-              <td><input className="in-gold" style={{color:'#3b82f6'}} defaultValue={a.css} onBlur={e=>handleUpdateA(a.id,{css:parseFloat(e.target.value)})} /></td>
-              <td style={{textAlign:'right'}}><div style={{display:'flex', gap:10, justifyContent:'flex-end'}}><Eye size={18} onClick={()=>{setActiveA(a); setViewStroke(a.stroke||"Free");}} style={{cursor:'pointer'}}/><Trash2 size={18} color="#f87171" onClick={async()=>{if(confirm('删?')){await supabase.from("athletes").delete().eq("id",a.id); loadD();}}} style={{cursor:'pointer'}}/></div></td></tr>))}
+              <td><input className="in-gold" value={a.strokeData?.[a.currentStroke || "Free"]?.t ?? a.t_value ?? 15} onChange={(e)=>setAthletes(prev=>prev.map(item=>item.id===a.id?{...item, strokeData:{...item.strokeData,[item.currentStroke || "Free"]:{...(item.strokeData?.[item.currentStroke || "Free"] || {t:15,css:80}), t:parseFloat(e.target.value)||0}}}:item))} onBlur={e=>handleUpdateA(a.id,{strokeData:{...a.strokeData,[a.currentStroke || "Free"]:{...(a.strokeData?.[a.currentStroke || "Free"] || {t:15,css:80}), t:parseFloat(e.target.value)||0}}})} /></td>
+              <td><input className="in-gold" style={{color:'#3b82f6'}} value={a.strokeData?.[a.currentStroke || "Free"]?.css ?? a.css ?? 80} onChange={(e)=>setAthletes(prev=>prev.map(item=>item.id===a.id?{...item, strokeData:{...item.strokeData,[item.currentStroke || "Free"]:{...(item.strokeData?.[item.currentStroke || "Free"] || {t:15,css:80}), css:parseFloat(e.target.value)||0}}}:item))} onBlur={e=>handleUpdateA(a.id,{strokeData:{...a.strokeData,[a.currentStroke || "Free"]:{...(a.strokeData?.[a.currentStroke || "Free"] || {t:15,css:80}), css:parseFloat(e.target.value)||0}}})} /></td>
+              <td style={{textAlign:'right'}}><div style={{display:'flex', gap:10, justifyContent:'flex-end'}}><Eye size={18} onClick={()=>{setActiveA(a); setViewStroke(a.currentStroke||"Free");}} style={{cursor:'pointer'}}/><Trash2 size={18} color="#f87171" onClick={async()=>{if(confirm('删?')){await supabase.from("athletes").delete().eq("id",a.id); loadD();}}} style={{cursor:'pointer'}}/></div></td></tr>))}
             </tbody>
           </table>
         </div>
@@ -181,15 +217,16 @@ export default function Page() {
             <div style={{textAlign:'center', marginBottom:15}}>
               <h2>{activeA.name}</h2>
               <div style={{display:'flex', justifyContent:'center', gap:10, margin:'10px 0'}}>
-                {['Free','Back','Fly','Breast'].map(s=>(<div key={s} className={`stroke-tab ${viewStroke===s?'active':''}`} onClick={()=>setViewStroke(s)}>{s==='Free'?'自':s==='Back'?'仰':s==='Fly'?'蝶':'蛙'}</div>))}
+                {['Free','Back','Fly','Breast'].map(s=>(<div key={s} className={`stroke-tab ${viewStroke===s?'active':''}`} onClick={()=>{setViewStroke(s); setActiveA((prev:any)=>prev?{...prev,currentStroke:s}:prev);}}>{s==='Free'?'自':s==='Back'?'仰':s==='Fly'?'蝶':'蛙'}</div>))}
               </div>
+              <p style={{fontSize:11, color:'#facc15'}}>当前泳姿数据: T {activeA.strokeData?.[activeA.currentStroke || viewStroke]?.t ?? activeA.t_value ?? "--"} / CSS {activeA.strokeData?.[activeA.currentStroke || viewStroke]?.css ?? activeA.css ?? "--"}</p>
               <p style={{fontSize:11, color:'#4a5568'}}>{activeA.age}岁 | {activeA.pool_type}M池 | {activeA.phv_stage==='pre'?'发育前期':'后期'}</p>
             </div>
             
             <div style={{overflowX:'auto', background:'#000', borderRadius:16, padding:8, border:'1px solid #222'}}>
               <table style={{width:'100%', minWidth:600, borderCollapse:'collapse'}}>
                 <thead><tr style={{color:'#718096', fontSize:9}}><th>ZONE</th><th>25M</th><th>50M</th><th>100M</th><th>200M</th><th>400M</th><th>HR</th></tr></thead>
-                <tbody>{calculateMCDS(activeA, viewStroke).map(r => (
+                <tbody>{calculateMCDS({ ...activeA, currentStroke: activeA.currentStroke || viewStroke }, activeA.currentStroke || viewStroke).map(r => (
                   <tr key={r.zone} style={{textAlign:'center', borderBottom:'1px solid #111'}}>
                     <td style={{padding:12, textAlign:'left', fontWeight:'bold', fontSize:12}}>{r.zone}</td>
                     {r.paces.map((p, i) => (<td key={i}>{!p.v || p.v==='N/A'?'--':<> <div className="pace">{p.v}</div><div className="ri-tag">RI:{p.ri}</div></>}</td>))}
