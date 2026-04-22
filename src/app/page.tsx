@@ -47,7 +47,8 @@ const ZONE_CONFIG: Record<string, { label: string; hrPct: number }> = {
 const calculateMCDS = (athlete: any) => {
   if (!athlete) return [];
   const { t_value: t, css, phv_stage: stage, age, stroke: strokeKey, pool_type: pool } = athlete;
-  const sFactor = STROKE_OPTIONS.find(s => s.key === (strokeKey || 'Free'))?.factor || 1.0;
+  const sInfo = STROKE_OPTIONS.find(s => s.key === (strokeKey || 'Free'));
+  const sFactor = sInfo?.factor || 1.0;
   const pFactor = pool === '50' ? 1.035 : 1.0;
   const maxHR = 220 - (age || 14);
   const DISTANCES = [25, 50, 100, 200, 400];
@@ -69,11 +70,9 @@ const calculateMCDS = (athlete: any) => {
     return {
       zone, label: cfg.label,
       paces: DISTANCES.map(d => {
-        // --- 熔断逻辑 ---
         let isNA = false;
         if (['SP', 'TSP', 'ANP', 'ANE'].includes(zone) && d > 100) isNA = true;
         if ((strokeKey === 'Fly' || strokeKey === 'Breast') && d > 200) isNA = true;
-
         if (isNA) return { val: 'N/A', range: '--' };
 
         const decay = DECAY_FACTORS[strokeKey || 'Free']?.[d] || 1.0;
@@ -134,24 +133,24 @@ export default function Page() {
   };
 
   return (
-    <div className="mcds-app">
+    <div className="mcds-app-root">
       <style>{`
-        .mcds-app { background: #05070a; color: #e2e8f0; min-height: 100vh; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 15px; }
-        .glass-card { width: 100%; max-width: 1100px; background: rgba(15, 20, 28, 0.85); border: 1px solid rgba(255,255,255,0.05); border-radius: 24px; padding: 20px; overflow-x: auto; }
+        .mcds-app-root { background: #05070a; color: #e2e8f0; min-height: 100vh; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 15px; box-sizing: border-box; }
+        .glass-card { width: 100%; max-width: 1100px; background: rgba(15, 20, 28, 0.85); border: 1px solid rgba(255,255,255,0.05); border-radius: 24px; padding: 20px; overflow-x: auto; box-sizing: border-box; }
         .entry-card { width: 100%; max-width: 340px; background: #111; padding: 40px 25px; border-radius: 32px; text-align: center; margin-top: 10vh; border: 1px solid #222; }
         .input-dark { width: 100%; background: #000; border: 1px solid #333; color: #fff; padding: 12px; border-radius: 12px; margin-bottom: 15px; outline: none; box-sizing: border-box; }
         .btn-gold { width: 100%; background: #facc15; color: #000; padding: 15px; border-radius: 14px; font-weight: 900; border: none; cursor: pointer; }
         .admin-table { width: 100%; border-collapse: collapse; min-width: 950px; }
         .admin-table th { color: #4a5568; font-size: 10px; padding: 12px 10px; text-transform: uppercase; border-bottom: 1px solid #1a202c; text-align: left; }
         .admin-table td { padding: 12px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); }
-        .in-gold { background: #000; border: 1px solid #333; color: #facc15; padding: 8px; border-radius: 8px; width: 55px; text-align: center; font-weight: bold; }
+        .in-gold { background: #000; border: 1px solid #333; color: #facc15; padding: 8px; border-radius: 8px; width: 55px; text-align: center; font-weight: bold; outline: none; }
         .sel-dark { background: #000; border: 1px solid #333; color: #e2e8f0; padding: 8px; border-radius: 8px; font-size: 11px; outline: none; }
+        .pace-tag { color: #10b981; font-family: monospace; font-weight: bold; font-size: 16px; }
         .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 100; overflow-y: auto; padding: 15px; display: flex; justify-content: center; }
         .modal-content { background: #0a0c10; border: 1px solid #333; border-radius: 30px; padding: 25px; width: 100%; max-width: 850px; height: fit-content; position: relative; }
-        .pace-tag { color: #10b981; font-family: monospace; font-weight: bold; font-size: 16px; }
         @media print {
           .no-print { display: none !important; }
-          .mcds-app { background: white !important; color: black !important; padding: 0 !important; display: block !important; }
+          .mcds-app-root { background: white !important; color: black !important; padding: 0 !important; display: block !important; }
           .modal { position: static !important; }
           .modal-content { border: none !important; color: black !important; background: white !important; max-width: 100% !important; padding: 0 !important; }
           .pace-tag { color: black !important; }
@@ -174,7 +173,7 @@ export default function Page() {
           <input type="password" placeholder="密码" className="input-dark" value={password} onChange={e=>setPassword(e.target.value)} />
           <button className="btn-gold" onClick={async () => {
              const { error } = await supabase.auth.signInWithPassword({ email, password });
-             if (error) alert("失败"); else window.location.reload();
+             if (error) alert("密码错误"); else window.location.reload();
           }}>验证并登录</button>
         </div>
       )}
@@ -182,12 +181,12 @@ export default function Page() {
       {role === "coach" && (
         <div className="glass-card no-print">
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:25}}>
-            <h3 style={{margin:0, fontSize:20}}>队员管理系统</h3>
+            <h3 style={{margin:0, fontSize:20}}>运动员管理后台</h3>
             <button className="btn-gold" style={{width:'auto', padding:'10px 20px'}} onClick={handleAdd}>+ 新增运动员</button>
           </div>
           <table className="admin-table">
             <thead>
-              <tr><th>姓名</th><th>年龄</th><th>PHV分期</th><th>泳姿</th><th>池长</th><th>T-VAL</th><th>CSS</th><th style={{textAlign:'right'}}>操作</th></tr>
+              <tr><th>姓名</th><th>年龄</th><th>PHV分期</th><th>专项泳姿</th><th>池长</th><th>T-VAL</th><th>CSS</th><th style={{textAlign:'right'}}>操作</th></tr>
             </thead>
             <tbody>
               {athletes.map(a => (
@@ -209,4 +208,64 @@ export default function Page() {
                       <option value="25">25m</option><option value="50">50m</option>
                     </select>
                   </td>
-                  <td><input className="in-gold" defaultValue={a.t_v
+                  <td><input className="in-gold" defaultValue={a.t_value} onBlur={e=>handleUpdate(a.id, {t_value:parseFloat(e.target.value)})} /></td>
+                  <td><input className="in-gold" style={{color:'#3b82f6'}} defaultValue={a.css} onBlur={e=>handleUpdate(a.id, {css:parseFloat(e.target.value)})} /></td>
+                  <td style={{textAlign:'right'}}>
+                    <div style={{display:'flex', justifyContent:'flex-end', gap:15}}>
+                      <Eye size={22} style={{cursor:'pointer'}} onClick={()=>setActiveAthlete(a)} />
+                      <Share2 size={22} color="#3b82f6" style={{cursor:'pointer'}} onClick={()=>{navigator.clipboard.writeText(`${window.location.origin}?token=${a.share_token}`);alert("分享链接已复制");}} />
+                      <Trash2 size={22} color="#f87171" style={{cursor:'pointer'}} onClick={async ()=>{if(window.confirm('确认删除?')){await supabase.from("athletes").delete().eq("id",a.id); loadData();}}} />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button onClick={()=>{supabase.auth.signOut(); window.location.reload();}} style={{background:'none', border:'none', color:'#4a5568', marginTop:30, cursor:'pointer', fontSize:12}}>退出系统</button>
+        </div>
+      )}
+
+      {activeAthlete && (
+        <div className={role === 'coach' ? "modal" : "glass-card"}>
+          <div className="modal-content">
+            {role === 'coach' && <div style={{textAlign:'right'}} className="no-print"><X size={32} style={{cursor:'pointer'}} onClick={()=>setActiveAthlete(null)} /></div>}
+            <div style={{textAlign:'center', marginBottom:30}}>
+              <h1 style={{margin:0, fontSize:36}}>{activeAthlete.name}</h1>
+              <p style={{fontSize:14, color:'#facc15', marginTop:8}} suppressHydrationWarning>
+                {activeAthlete.age}岁 | {STROKE_OPTIONS.find(s=>s.key===(activeAthlete.stroke||'Free'))?.name} | {activeAthlete.pool_type}M池 | {activeAthlete.phv_stage === 'pre' ? '发育前期' : '发育后期'} | {new Date().toLocaleDateString()}
+              </p>
+            </div>
+            <div style={{overflowX:'auto'}}>
+              <table style={{width:'100%', minWidth:650, borderCollapse:'collapse'}}>
+                <thead>
+                  <tr style={{background:'#111', color:'#718096', fontSize:10}}>
+                    <th style={{padding:12, textAlign:'left'}}>ZONE</th><th>25M</th><th>50M</th><th>100M</th><th>200M</th><th>400M</th><th>HR/10S</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {calculateMCDS(activeAthlete).map(r => (
+                    <tr key={r.zone} style={{textAlign:'center', borderBottom:'1px solid #111'}}>
+                      <td style={{padding:15, textAlign:'left', fontWeight:'bold', fontSize:14}}>{r.zone}</td>
+                      {r.paces.map((p, i) => (
+                        <td key={i}>
+                          {p.val === 'N/A' ? <span style={{color:'#333'}}>—</span> : (
+                            <>
+                              <div className="pace-tag">{p.val}</div>
+                              <div style={{fontSize:9, color:'#4a5568', marginTop:2}}>{p.range}</div>
+                            </>
+                          )}
+                        </td>
+                      ))}
+                      <td style={{color:'#f87171', fontWeight:900, fontSize:20}}>{r.hr}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <button className="btn-gold no-print" style={{marginTop:30}} onClick={()=>window.print()}>打印职业训练报告</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
