@@ -13,17 +13,11 @@ const formatPace = (s: number) => {
   return `${m}:${r.toFixed(1).padStart(4, '0')}`;
 };
 
-// --- 2. 核心计算引擎 (M-CDS V3.3 协议修复版) ---
+// --- 2. 核心计算引擎 (M-CDS V3.3 严格协议版) ---
 const calculateMCDS = (a: any, activeStroke: string) => {
   if (!a) return [];
   const DIST = [25, 50, 100, 200, 400];
   const SF: any = { Free: 1.0, Back: 1.06, Fly: 1.12, Breast: 1.18 };
-  const DF: any = { 
-    Free: { 100: 1.01, 200: 1.02, 400: 1.03 }, 
-    Back: { 100: 1.01, 200: 1.02, 400: 1.03 }, 
-    Fly: { 100: 1.03, 200: 1.07 }, 
-    Breast: { 100: 1.025, 200: 1.06 } 
-  };
   
   const Z: any = { 
     SP:  { h: 0.98, ri: (d: any) => d <= 25 ? '3min' : '5min' },
@@ -40,23 +34,21 @@ const calculateMCDS = (a: any, activeStroke: string) => {
 
   return Object.keys(Z).map(z => {
     const cfg = Z[z];
-    
-    // --- 核心：Base 25m 计算隔离 ---
     let b25 = 0;
+
     if (['SP', 'TSP', 'ANP', 'ANE'].includes(z)) {
-      // 无氧类始终基于 T-Value
+      // 无氧类逻辑：T-Value 驱动
       const tBase = z === 'SP' ? a.t_value : z === 'TSP' ? a.t_value + 0.8 : z === 'ANP' ? a.t_value + 2.5 : a.t_value * 1.18;
       b25 = tBase * strokeF * poolF;
     } else {
-      // 有氧类 (AES/AEN/BAE)
+      // 有氧类逻辑
       if (a.phv_stage === 'pre') {
-        // Pre-PHV 严格基于 CSS
+        // Pre-PHV：CSS 驱动 + 泳姿修正
         const css25 = a.css / 4;
         const cssFactor = z === 'AES' ? 1.015 : z === 'AEN' ? 1.055 : 1.18;
-        b25 = css25 * cssFactor * poolF; 
-        // 注意：CSS 计算通常已包含泳姿特性，如需额外泳姿调整应慎重。此协议下 Pre-PHV 仅应用池长修正。
+        b25 = css25 * cssFactor * poolF * strokeF; 
       } else {
-        // Post-PHV 基于 T-Value 转化
+        // Post-PHV：T-Value 转化
         const tFactor = z === 'AES' ? 1.28 : z === 'AEN' ? 1.38 : 1.55;
         b25 = a.t_value * tFactor * strokeF * poolF;
       }
@@ -65,16 +57,14 @@ const calculateMCDS = (a: any, activeStroke: string) => {
     return {
       zone: z,
       paces: DIST.map(d => {
-        // --- 严格熔断限制 ---
+        // 熔断限制逻辑
         let isNA = false;
         if (['SP', 'TSP', 'ANP'].includes(z) && d > 50) isNA = true;
         if (z === 'ANE' && d > 100) isNA = true;
         if ((activeStroke === 'Fly' || activeStroke === 'Breast') && d > 200) isNA = true;
+        if (isNA) return { v: 'N/A', r: '--', ri: '--' };
 
-        if (isNA) return { v: 'N/A' };
-
-        const decay = (DF[activeStroke] || DF.Free)[d] || 1.0;
-        const finalSeconds = b25 * (d / 25) * decay;
+        const finalSeconds = b25 * (d / 25); 
 
         return { 
           v: formatPace(finalSeconds), 
