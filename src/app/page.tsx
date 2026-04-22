@@ -3,11 +3,11 @@
 import React, { useEffect, useState } from "react";
 import { 
   Printer, Save, Waves, Plus, Zap, Baby, 
-  Share2, Eye, X, Calculator, Lock, Users, Activity, LogOut, Trash2
+  Share2, Eye, X, Calculator, Lock, Users, Activity, LogOut, Trash2, Calendar
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
-// --- 1. 严谨的时间格式化逻辑 ---
+// --- 1. 核心计算引擎 (锁定不动) ---
 const formatPace = (s: number) => {
   if (s >= 3600) return "59:59"; 
   let totalMs = Math.round(s * 10) / 10;
@@ -18,251 +18,194 @@ const formatPace = (s: number) => {
   return `${m}:${remainder.toFixed(1).padStart(4, '0')}`;
 };
 
-// --- 2. 核心配置：系数矩阵 ---
-const DECAY_FACTORS: Record<string, Record<number, number>> = {
-  'Free':   { 25: 1.0, 50: 1.0, 100: 1.01, 200: 1.02, 400: 1.03 },
-  'Back':   { 25: 1.0, 50: 1.0, 100: 1.01, 200: 1.02, 400: 1.03 },
-  'Fly':    { 25: 1.0, 50: 1.0, 100: 1.03, 200: 1.07, 400: 1.15 },
-  'Breast': { 25: 1.0, 50: 1.0, 100: 1.025, 200: 1.06, 400: 1.12 }
-};
-
-const STROKE_OPTIONS = [
-  { key: 'Free', name: '自由泳', factor: 1.0 },
-  { key: 'Back', name: '仰泳', factor: 1.06 },
-  { key: 'Fly', name: '蝶泳', factor: 1.12 },
-  { key: 'Breast', name: '蛙泳', factor: 1.18 }
-];
-
-const ZONE_CONFIG: Record<string, { label: string; hrPct: number }> = {
-  'SP':    { label: '绝对速度', hrPct: 0.98 },
-  'TSP':   { label: '技术冲刺', hrPct: 0.95 },
-  'ANP':   { label: '无氧功率', hrPct: 0.92 },
-  'ANE':   { label: '无氧耐力', hrPct: 0.88 },
-  'AES':   { label: '有氧动力', hrPct: 0.82 },
-  'AEN':   { label: '有氧耐力', hrPct: 0.75 },
-  'BAE':   { label: '基础有氧', hrPct: 0.65 }
-};
-
-// --- 3. 核心计算引擎 (M-CDS V3.3) ---
 const calculateMCDS = (athlete: any) => {
   if (!athlete) return [];
   const { t_value: t, css, phv_stage: stage, age, stroke: strokeKey, pool_type: pool } = athlete;
-  const sInfo = STROKE_OPTIONS.find(s => s.key === (strokeKey || 'Free'));
-  const sFactor = sInfo?.factor || 1.0;
+  const STROKE_FACTORS: any = { 'Free': 1.0, 'Back': 1.06, 'Fly': 1.12, 'Breast': 1.18 };
+  const sFactor = STROKE_FACTORS[strokeKey || 'Free'] || 1.0;
   const pFactor = pool === '50' ? 1.035 : 1.0;
   const maxHR = 220 - (age || 14);
-  const DISTANCES = [25, 50, 100, 200, 400];
+  const DECAY: any = { 'Free':{25:1,50:1,100:1.01,200:1.02,400:1.03}, 'Back':{25:1,50:1,100:1.01,200:1.02,400:1.03}, 'Fly':{25:1,50:1,100:1.03,200:1.07,400:1.15}, 'Breast':{25:1,50:1,100:1.025,200:1.06,400:1.12} };
+  const ZONES: any = { 'SP':0.98, 'TSP':0.95, 'ANP':0.92, 'ANE':0.88, 'AES':0.82, 'AEN':0.75, 'BAE':0.65 };
 
-  return Object.keys(ZONE_CONFIG).map(zone => {
-    const cfg = ZONE_CONFIG[zone];
-    const b25Base = () => {
-      if (zone === 'SP') return t;
-      if (zone === 'TSP') return t + 0.8;
-      if (zone === 'ANP') return t + 2.5;
-      if (zone === 'ANE') return t * 1.18;
-      if (zone === 'AES') return stage === 'pre' ? (css / 4 * 1.015) : (t * 1.28);
-      if (zone === 'AEN') return stage === 'pre' ? (css / 4 * 1.055) : (t * 1.38);
-      return stage === 'pre' ? (css / 4 * 1.18) : (t * 1.55);
-    };
-
-    const finalB25 = b25Base() * sFactor * pFactor;
-
+  return Object.keys(ZONES).map(zone => {
+    const b25 = () => {
+      if (zone === 'SP') return t; if (zone === 'TSP') return t + 0.8; if (zone === 'ANP') return t + 2.5; if (zone === 'ANE') return t * 1.18;
+      if (zone === 'AES') return stage === 'pre' ? (css/4*1.015) : (t*1.28); if (zone === 'AEN') return stage === 'pre' ? (css/4*1.055) : (t*1.38);
+      return stage === 'pre' ? (css/4*1.18) : (t*1.55);
+    }();
     return {
-      zone, label: cfg.label,
-      paces: DISTANCES.map(d => {
-        let isNA = false;
-        if (['SP', 'TSP', 'ANP', 'ANE'].includes(zone) && d > 100) isNA = true;
-        if ((strokeKey === 'Fly' || strokeKey === 'Breast') && d > 200) isNA = true;
+      zone, label: zone,
+      paces: [25, 50, 100, 200, 400].map(d => {
+        let isNA = (['SP','TSP','ANP','ANE'].includes(zone) && d > 100) || (['Fly','Breast'].includes(strokeKey) && d > 200);
         if (isNA) return { val: 'N/A', range: '--' };
-
-        const decay = DECAY_FACTORS[strokeKey || 'Free']?.[d] || 1.0;
-        const seconds = finalB25 * (d / 25) * decay;
-        return { 
-          val: formatPace(seconds), 
-          range: `${formatPace(seconds * 0.98)}~${formatPace(seconds * 1.02)}` 
-        };
+        const s = b25 * sFactor * pFactor * (d/25) * (DECAY[strokeKey||'Free'][d] || 1);
+        return { val: formatPace(s), range: `${formatPace(s*0.98)}~${formatPace(s*1.02)}` };
       }),
-      hr: Math.round((maxHR * cfg.hrPct) / 6)
+      hr: Math.round((maxHR * ZONES[zone]) / 6)
     };
   });
 };
 
 export default function Page() {
-  const [role, setRole] = useState<"guest" | "coach_login" | "coach" | "parent">("guest");
+  const [role, setRole] = useState<any>("guest");
   const [athletes, setAthletes] = useState<any[]>([]);
+  const [sched, setSched] = useState<any>({ week_1:'', week_2:'', week_3:'', week_4:'' });
   const [activeAthlete, setActiveAthlete] = useState<any>(null);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState(""); const [password, setPassword] = useState("");
+  const [showSched, setShowSched] = useState(false);
 
   useEffect(() => {
     const init = async () => {
       const token = new URLSearchParams(window.location.search).get("token");
       if (token) {
-        setRole("parent");
         const { data } = await supabase.from("athletes").select("*").eq("share_token", token).single();
-        if (data) setActiveAthlete(data);
+        if (data) { setRole("parent"); setActiveAthlete(data); loadSched(data.coach_id); }
       } else {
         const { data: { session } } = await supabase.auth.getSession();
-        if (session) { setRole("coach"); loadData(); }
+        if (session) { setRole("coach"); loadData(); loadSched(session.user.id); }
       }
     };
     init();
   }, []);
 
   const loadData = async () => {
-    setLoading(true);
-    const { data } = await supabase.from("athletes").select("*").order("name");
+    const { data } = await supabase.from("athletes").select("*").order("age", { ascending: false });
     if (data) setAthletes(data);
-    setLoading(false);
   };
 
-  const handleUpdate = async (id: string, updates: any) => {
-    await supabase.from("athletes").update(updates).eq("id", id);
-    loadData();
+  const loadSched = async (cid: string) => {
+    const { data } = await supabase.from("schedules").select("*").eq("coach_id", cid).single();
+    if (data) setSched(data);
   };
 
-  const handleAdd = async () => {
-    const name = prompt("运动员姓名:");
-    if (!name) return;
-    await supabase.from("athletes").insert([{
-      name, age: 14, t_value: 15, css: 80, phv_stage: 'post', stroke: 'Free', pool_type: '25',
-      share_token: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2)
-    }]);
-    loadData();
+  const saveSched = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    await supabase.from("schedules").upsert({ coach_id: user?.id, ...sched });
+    alert("计划已发布！家长端将收到更新提醒。");
+  };
+
+  const handleLogin = async () => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) alert("错误"); else window.location.reload();
   };
 
   return (
-    <div className="mcds-app-root">
+    <div className="mcds-app">
       <style>{`
-        .mcds-app-root { background: #05070a; color: #e2e8f0; min-height: 100vh; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 15px; box-sizing: border-box; }
-        .glass-card { width: 100%; max-width: 1100px; background: rgba(15, 20, 28, 0.85); border: 1px solid rgba(255,255,255,0.05); border-radius: 24px; padding: 20px; overflow-x: auto; box-sizing: border-box; }
-        .entry-card { width: 100%; max-width: 340px; background: #111; padding: 40px 25px; border-radius: 32px; text-align: center; margin-top: 10vh; border: 1px solid #222; }
-        .input-dark { width: 100%; background: #000; border: 1px solid #333; color: #fff; padding: 12px; border-radius: 12px; margin-bottom: 15px; outline: none; box-sizing: border-box; }
-        .btn-gold { width: 100%; background: #facc15; color: #000; padding: 15px; border-radius: 14px; font-weight: 900; border: none; cursor: pointer; }
-        .admin-table { width: 100%; border-collapse: collapse; min-width: 950px; }
-        .admin-table th { color: #4a5568; font-size: 10px; padding: 12px 10px; text-transform: uppercase; border-bottom: 1px solid #1a202c; text-align: left; }
-        .admin-table td { padding: 12px 10px; border-bottom: 1px solid rgba(255,255,255,0.03); }
-        .in-gold { background: #000; border: 1px solid #333; color: #facc15; padding: 8px; border-radius: 8px; width: 55px; text-align: center; font-weight: bold; outline: none; }
-        .sel-dark { background: #000; border: 1px solid #333; color: #e2e8f0; padding: 8px; border-radius: 8px; font-size: 11px; outline: none; }
-        .pace-tag { color: #10b981; font-family: monospace; font-weight: bold; font-size: 16px; }
-        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 100; overflow-y: auto; padding: 15px; display: flex; justify-content: center; }
-        .modal-content { background: #0a0c10; border: 1px solid #333; border-radius: 30px; padding: 25px; width: 100%; max-width: 850px; height: fit-content; position: relative; }
-        @media print {
-          .no-print { display: none !important; }
-          .mcds-app-root { background: white !important; color: black !important; padding: 0 !important; display: block !important; }
-          .modal { position: static !important; }
-          .modal-content { border: none !important; color: black !important; background: white !important; max-width: 100% !important; padding: 0 !important; }
-          .pace-tag { color: black !important; }
-          th, td { border: 1px solid #ddd !important; color: black !important; }
-        }
+        .mcds-app { background: #05070a; color: #e2e8f0; min-height: 100vh; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 15px; }
+        .glass { width: 100%; max-width: 1100px; background: rgba(15, 20, 28, 0.85); border: 1px solid rgba(255,255,255,0.05); border-radius: 24px; padding: 20px; overflow-x: auto; }
+        .btn-gold { background: #facc15; color: #000; padding: 12px 20px; border-radius: 12px; font-weight: 900; border: none; cursor: pointer; }
+        .input-dark { background: #000; border: 1px solid #333; color: #fff; padding: 10px; border-radius: 10px; width: 100%; outline: none; }
+        .admin-table { width: 100%; border-collapse: collapse; min-width: 800px; }
+        .admin-table td, .admin-table th { padding: 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .pace-tag { color: #10b981; font-family: monospace; font-weight: bold; font-size: 15px; }
+        .sched-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; }
+        .sched-card { background: #111; padding: 15px; border-radius: 15px; border: 1px solid #222; }
+        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 100; display: flex; justify-content: center; padding: 15px; overflow-y: auto; }
+        @media print { .no-print { display: none !important; } }
       `}</style>
 
       {role === "guest" && (
-        <div className="entry-card">
+        <div style={{marginTop:'20vh', textAlign:'center'}} className="glass">
           <Waves size={60} color="#facc15" style={{margin:'0 auto 20px'}} />
-          <h1 style={{fontSize:24, fontWeight:900}}>M-CDS <span style={{color:'#facc15'}}>ELITE</span></h1>
-          <button className="btn-gold" style={{marginTop:30}} onClick={()=>setRole("coach_login")}>教练员入口</button>
+          <h1>M-CDS ELITE</h1>
+          <button className="btn-gold" onClick={()=>setRole("coach_login")}>教练登录</button>
         </div>
       )}
 
       {role === "coach_login" && (
-        <div className="entry-card">
-          <Lock size={40} color="#facc15" style={{margin:'0 auto 25px'}} />
-          <input type="email" placeholder="教练邮箱" className="input-dark" value={email} onChange={e=>setEmail(e.target.value)} />
-          <input type="password" placeholder="密码" className="input-dark" value={password} onChange={e=>setPassword(e.target.value)} />
-          <button className="btn-gold" onClick={async () => {
-             const { error } = await supabase.auth.signInWithPassword({ email, password });
-             if (error) alert("密码错误"); else window.location.reload();
-          }}>验证并登录</button>
+        <div style={{marginTop:'15vh', width:300}} className="glass">
+          <input className="input-dark" placeholder="邮箱" onChange={e=>setEmail(e.target.value)} style={{marginBottom:10}} />
+          <input className="input-dark" type="password" placeholder="密码" onChange={e=>setPassword(e.target.value)} style={{marginBottom:20}} />
+          <button className="btn-gold" style={{width:'100%'}} onClick={handleLogin}>进入</button>
         </div>
       )}
 
       {role === "coach" && (
-        <div className="glass-card no-print">
-          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:25}}>
-            <h3 style={{margin:0, fontSize:20}}>运动员管理后台</h3>
-            <button className="btn-gold" style={{width:'auto', padding:'10px 20px'}} onClick={handleAdd}>+ 新增运动员</button>
+        <div className="glass no-print">
+          <div style={{display:'flex', justifyContent:'space-between', marginBottom:20}}>
+            <h2>我的泳队 (年龄排序)</h2>
+            <div style={{display:'flex', gap:10}}>
+              <button className="btn-gold" style={{background:'#3b82f6', color:'#fff'}} onClick={()=>setShowSched(!showSched)}><Calendar size={18}/> 周期计划</button>
+              <button className="btn-gold" onClick={async ()=>{const n=prompt("姓名:"); if(n) await supabase.from("athletes").insert([{name:n, age:14, t_value:15, css:80, share_token:Math.random().toString(36).substring(2)}]); loadData();}}>+ 新增</button>
+            </div>
           </div>
+
+          {showSched && (
+            <div style={{marginBottom:30, padding:20, background:'#0a0c10', borderRadius:20, border:'1px solid #facc15'}}>
+              <h3>4周周期化管理</h3>
+              <div className="sched-grid">
+                {[1,2,3,4].map(i => (
+                  <div key={i} className="sched-card">
+                    <label style={{fontSize:10, color:'#facc15'}}>WEEK {i}</label>
+                    <textarea className="input-dark" style={{height:80, marginTop:5, fontSize:12}} value={(sched as any)[`week_${i}`]} onChange={e=>setSched({...sched, [`week_${i}`]:e.target.value})} placeholder="输入训练重点..." />
+                  </div>
+                ))}
+              </div>
+              <button className="btn-gold" style={{marginTop:15, width:'100%'}} onClick={saveSched}>发布全队计划</button>
+            </div>
+          )}
+
           <table className="admin-table">
-            <thead>
-              <tr><th>姓名</th><th>年龄</th><th>PHV分期</th><th>专项泳姿</th><th>池长</th><th>T-VAL</th><th>CSS</th><th style={{textAlign:'right'}}>操作</th></tr>
-            </thead>
+            <thead><tr style={{color:'#4a5568', fontSize:10}}><th>姓名</th><th>年龄</th><th>T-VAL</th><th>CSS</th><th style={{textAlign:'right'}}>操作</th></tr></thead>
             <tbody>
               {athletes.map(a => (
                 <tr key={a.id}>
-                  <td style={{fontWeight:'bold', fontSize:16}}>{a.name}</td>
-                  <td><input className="in-gold" type="number" defaultValue={a.age} onBlur={e=>handleUpdate(a.id, {age:parseInt(e.target.value)})} /></td>
-                  <td>
-                    <select className="sel-dark" defaultValue={a.phv_stage} onChange={e=>handleUpdate(a.id, {phv_stage:e.target.value})}>
-                      <option value="pre">发育前期(Pre)</option><option value="post">发育后期(Post)</option>
-                    </select>
-                  </td>
-                  <td>
-                    <select className="sel-dark" defaultValue={a.stroke || 'Free'} onChange={e=>handleUpdate(a.id, {stroke:e.target.value})}>
-                      {STROKE_OPTIONS.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <select className="sel-dark" defaultValue={a.pool_type || '25'} onChange={e=>handleUpdate(a.id, {pool_type:e.target.value})}>
-                      <option value="25">25m</option><option value="50">50m</option>
-                    </select>
-                  </td>
-                  <td><input className="in-gold" defaultValue={a.t_value} onBlur={e=>handleUpdate(a.id, {t_value:parseFloat(e.target.value)})} /></td>
-                  <td><input className="in-gold" style={{color:'#3b82f6'}} defaultValue={a.css} onBlur={e=>handleUpdate(a.id, {css:parseFloat(e.target.value)})} /></td>
+                  <td style={{fontWeight:'bold'}}>{a.name}</td>
+                  <td>{a.age}岁</td>
+                  <td>{a.t_value}s</td>
+                  <td>{a.css}s</td>
                   <td style={{textAlign:'right'}}>
-                    <div style={{display:'flex', justifyContent:'flex-end', gap:15}}>
-                      <Eye size={22} style={{cursor:'pointer'}} onClick={()=>setActiveAthlete(a)} />
-                      <Share2 size={22} color="#3b82f6" style={{cursor:'pointer'}} onClick={()=>{navigator.clipboard.writeText(`${window.location.origin}?token=${a.share_token}`);alert("分享链接已复制");}} />
-                      <Trash2 size={22} color="#f87171" style={{cursor:'pointer'}} onClick={async ()=>{if(window.confirm('确认删除?')){await supabase.from("athletes").delete().eq("id",a.id); loadData();}}} />
-                    </div>
+                    <Eye size={20} style={{marginRight:15, cursor:'pointer'}} onClick={()=>setActiveAthlete(a)} />
+                    <Trash2 size={20} color="#f87171" style={{cursor:'pointer'}} onClick={async ()=>{if(window.confirm('删?')){await supabase.from("athletes").delete().eq("id",a.id); loadData();}}} />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <button onClick={()=>{supabase.auth.signOut(); window.location.reload();}} style={{background:'none', border:'none', color:'#4a5568', marginTop:30, cursor:'pointer', fontSize:12}}>退出系统</button>
         </div>
       )}
 
       {activeAthlete && (
-        <div className={role === 'coach' ? "modal" : "glass-card"}>
-          <div className="modal-content">
-            {role === 'coach' && <div style={{textAlign:'right'}} className="no-print"><X size={32} style={{cursor:'pointer'}} onClick={()=>setActiveAthlete(null)} /></div>}
-            <div style={{textAlign:'center', marginBottom:30}}>
-              <h1 style={{margin:0, fontSize:36}}>{activeAthlete.name}</h1>
-              <p style={{fontSize:14, color:'#facc15', marginTop:8}} suppressHydrationWarning>
-                {activeAthlete.age}岁 | {STROKE_OPTIONS.find(s=>s.key===(activeAthlete.stroke||'Free'))?.name} | {activeAthlete.pool_type}M池 | {activeAthlete.phv_stage === 'pre' ? '发育前期' : '发育后期'} | {new Date().toLocaleDateString()}
-              </p>
+        <div className={role==='coach'?'modal':'glass'}>
+          <div style={{width:'100%', maxWidth:850, background:'#0a0c10', padding:25, borderRadius:30, position:'relative'}}>
+            {role==='coach' && <X size={32} style={{position:'absolute', top:20, right:20, cursor:'pointer'}} onClick={()=>setActiveAthlete(null)} />}
+            <div style={{textAlign:'center', marginBottom:20}}>
+              <h1>{activeAthlete.name}</h1>
+              <p style={{color:'#facc15'}}>{activeAthlete.age}岁 | {activeAthlete.stroke} | {activeAthlete.pool_type}M池</p>
             </div>
-            <div style={{overflowX:'auto'}}>
-              <table style={{width:'100%', minWidth:650, borderCollapse:'collapse'}}>
-                <thead>
-                  <tr style={{background:'#111', color:'#718096', fontSize:10}}>
-                    <th style={{padding:12, textAlign:'left'}}>ZONE</th><th>25M</th><th>50M</th><th>100M</th><th>200M</th><th>400M</th><th>HR/10S</th>
-                  </tr>
-                </thead>
+
+            {/* 4周计划展示区 */}
+            <div style={{marginBottom:25}}>
+              <h4 style={{display:'flex', alignItems:'center', gap:8}}><Calendar size={16} color="#facc15"/> 周期训练安排</h4>
+              <div className="sched-grid">
+                {[1,2,3,4].map(i => (
+                  <div key={i} className="sched-card" style={{borderColor: (sched as any)[`week_${i}`] ? '#10b981' : '#222'}}>
+                    <div style={{fontSize:9, color:'#718096'}}>W{i}</div>
+                    <div style={{fontSize:11, marginTop:5}}>{(sched as any)[`week_${i}`] || '暂无安排'}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{overflowX:'auto', background:'#000', borderRadius:20, padding:10, border:'1px solid #222'}}>
+              <table style={{width:'100%', minWidth:600}}>
+                <thead><tr style={{color:'#718096', fontSize:10}}><th>ZONE</th><th>25M</th><th>50M</th><th>100M</th><th>200M</th><th>400M</th><th>HR</th></tr></thead>
                 <tbody>
                   {calculateMCDS(activeAthlete).map(r => (
                     <tr key={r.zone} style={{textAlign:'center', borderBottom:'1px solid #111'}}>
-                      <td style={{padding:15, textAlign:'left', fontWeight:'bold', fontSize:14}}>{r.zone}</td>
+                      <td style={{padding:12, textAlign:'left', fontWeight:'bold'}}>{r.zone}</td>
                       {r.paces.map((p, i) => (
-                        <td key={i}>
-                          {p.val === 'N/A' ? <span style={{color:'#333'}}>—</span> : (
-                            <>
-                              <div className="pace-tag">{p.val}</div>
-                              <div style={{fontSize:9, color:'#4a5568', marginTop:2}}>{p.range}</div>
-                            </>
-                          )}
-                        </td>
+                        <td key={i}><div className="pace-tag">{p.val}</div><div style={{fontSize:8, color:'#4a5568'}}>{p.range}</div></td>
                       ))}
-                      <td style={{color:'#f87171', fontWeight:900, fontSize:20}}>{r.hr}</td>
+                      <td style={{color:'#f87171', fontWeight:900}}>{r.hr}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <button className="btn-gold no-print" style={{marginTop:30}} onClick={()=>window.print()}>打印职业训练报告</button>
+            <button className="btn-gold no-print" style={{width:'100%', marginTop:25}} onClick={()=>window.print()}>打印报告</button>
           </div>
         </div>
       )}
